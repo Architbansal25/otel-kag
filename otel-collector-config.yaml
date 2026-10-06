@@ -1,0 +1,35 @@
+# OpenTelemetry Collector pipeline for the OTel Demo + KAG stack.
+# Receives OTLP from the microservices, then routes:
+#   traces  -> Jaeger      (queried by kag-engine at http://jaeger:16686)
+#   metrics -> Prometheus  (scraped from this collector's :8889 endpoint)
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  # Export traces to Jaeger over OTLP gRPC.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  # Expose collected metrics for Prometheus to scrape on :8889.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

@@ -1,0 +1,17 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: broker
+  artemis:
+    mode: embedded
+    embedded:
+      enabled: true
+      queues: order.events
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

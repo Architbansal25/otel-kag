@@ -1,0 +1,188 @@
+# =============================================================================
+# Unified OpenTelemetry Demo + OpenSPG KAG (Knowledge Augmented Generation)
+# -----------------------------------------------------------------------------
+# This file bridges the observability plane (OpenTelemetry Demo microservices +
+# telemetry backends) with an AI reasoning plane (OpenSPG KAG).
+#
+# NETWORK BRIDGE OVERVIEW
+#   All services join a single user-defined bridge network: `telemetry-net`.
+#   On this network Docker provides automatic DNS, so containers reach each
+#   other by service name (e.g. `jaeger`, `prometheus`, `otel-collector`).
+#
+#   Data flow:
+#     microservices --(OTLP)--> otel-collector --> jaeger  (traces)
+#                                              \--> prometheus (metrics)
+#     kag-engine --(HTTP query)--> jaeger:16686   (read trace/graph data)
+#     kag-engine --(HTTP query)--> prometheus:9090 (read metric time-series)
+#
+#   Because `kag-engine` shares `telemetry-net`, it can pull observability
+#   signals directly from the telemetry data stores and use them as grounding
+#   context for knowledge-augmented reasoning — no host networking required.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Frontend — user-facing web app of the OpenTelemetry Demo. Emits traces for
+  # every user interaction and forwards downstream calls to the backend
+  # services below.
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ghcr.io/open-telemetry/demo:latest
+    container_name: frontend
+    command: ["/app/frontend"]
+    ports:
+      - "8080:8080"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=frontend
+      - CHECKOUT_SERVICE_ADDR=checkoutservice:5050
+      - PAYMENT_SERVICE_ADDR=paymentservice:50051
+    depends_on:
+      - otel-collector
+      - checkoutservice
+    networks:
+      - telemetry-net
+
+  # ---------------------------------------------------------------------------
+  # CheckoutService — orchestrates the order flow and calls PaymentService.
+  # Instrumented to export spans to the OTel Collector.
+  # ---------------------------------------------------------------------------
+  checkoutservice:
+    image: ghcr.io/open-telemetry/demo:latest
+    container_name: checkoutservice
+    command: ["/app/checkoutservice"]
+    ports:
+      - "5050:5050"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=checkoutservice
+      - PAYMENT_SERVICE_ADDR=paymentservice:50051
+    depends_on:
+      - otel-collector
+      - paymentservice
+    networks:
+      - telemetry-net
+
+  # ---------------------------------------------------------------------------
+  # PaymentService — charges the order. Leaf service in the trace tree; its
+  # spans complete the end-to-end distributed trace.
+  # ---------------------------------------------------------------------------
+  paymentservice:
+    image: ghcr.io/open-telemetry/demo:latest
+    container_name: paymentservice
+    command: ["/app/paymentservice"]
+    ports:
+      - "50051:50051"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=paymentservice
+    depends_on:
+      - otel-collector
+    networks:
+      - telemetry-net
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector — central pipeline. Receives OTLP from all
+  # microservices, then fans out: traces -> Jaeger, metrics -> Prometheus.
+  # This is the aggregation point that populates the telemetry data stores
+  # KAG later reasons over.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape endpoint (collector-exported metrics)
+    depends_on:
+      - jaeger
+    networks:
+      - telemetry-net
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — trace data store + UI. Holds the distributed traces that KAG
+  # queries at http://jaeger:16686 to build/graph service dependency context.
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"   # Jaeger UI / query API (consumed by kag-engine)
+      - "14250:14250"   # gRPC collector (traces in from otel-collector)
+    networks:
+      - telemetry-net
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — metrics time-series store. Scrapes the collector and exposes
+  # its query API at http://prometheus:9090, which KAG reads for metric-based
+  # grounding of its reasoning.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"   # Prometheus query API (consumed by kag-engine)
+    networks:
+      - telemetry-net
+
+  # ---------------------------------------------------------------------------
+  # KAG Engine (OpenSPG KAG) — the Knowledge Augmented Generation reasoning
+  # engine. Sharing `telemetry-net` lets it resolve `jaeger` and `prometheus`
+  # by DNS name and pull telemetry directly from those data stores:
+  #   - JAEGER_ENDPOINT     -> traces / service graph
+  #   - PROMETHEUS_ENDPOINT -> metrics
+  # It combines these signals with its local vector + graph stores to answer
+  # questions about system behavior.
+  # ---------------------------------------------------------------------------
+  kag-engine:
+    image: openspg/kag:latest
+    container_name: kag-engine
+    ports:
+      - "8888:8888"   # KAG service exposed on the host
+    environment:
+      # --- Telemetry data-store bridge (resolved via telemetry-net DNS) ---
+      - JAEGER_ENDPOINT=http://jaeger:16686
+      - PROMETHEUS_ENDPOINT=http://prometheus:9090
+      # --- KAG service binding ---
+      - KAG_HOST=0.0.0.0
+      - KAG_PORT=8888
+      # --- Local vector storage / graph environment initialization ---
+      # Graph store (OpenSPG uses a graph backend; local embedded config here).
+      - KAG_GRAPH_STORE_TYPE=local
+      - KAG_GRAPH_STORE_PATH=/data/graph
+      # Vector store for embeddings used in retrieval-augmented reasoning.
+      - KAG_VECTOR_STORE_TYPE=local
+      - KAG_VECTOR_STORE_PATH=/data/vectors
+      - KAG_VECTOR_DIMENSION=768
+      # Embedding + project bootstrap settings.
+      - KAG_EMBEDDING_MODEL=local
+      - KAG_PROJECT_NAMESPACE=OtelKag
+      - KAG_LOG_LEVEL=INFO
+    volumes:
+      # Persist the locally-initialized vector and graph stores across restarts.
+      - kag-data:/data
+    depends_on:
+      - jaeger
+      - prometheus
+    networks:
+      - telemetry-net
+
+# =============================================================================
+# Shared bridge network. Every service above attaches here, giving KAG a direct
+# line to the telemetry backends (Jaeger, Prometheus) via container DNS names.
+# =============================================================================
+networks:
+  telemetry-net:
+    driver: bridge
+    name: telemetry-net
+
+# Named volume that keeps KAG's local vector/graph data durable.
+volumes:
+  kag-data:

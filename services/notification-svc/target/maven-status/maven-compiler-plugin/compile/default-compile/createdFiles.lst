@@ -1,0 +1,3 @@
+com\nagarro\demo\notification\NotificationApplication.class
+com\nagarro\demo\notification\OrderEventListener.class
+com\nagarro\demo\notification\StatsController.class

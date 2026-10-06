@@ -1,0 +1,44 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: inventory-svc
+  datasource:
+    url: jdbc:h2:mem:inventory;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+    hikari:
+      # ---------------------------------------------------------------------
+      # THE ROOT CAUSE OF SCENARIO 2 LIVES HERE.
+      # Healthy default is 20. ops/deploy.ps1 restarts this service with
+      # INVENTORY_POOL_SIZE=2 and records it as "deploy #47" -- that recorded
+      # change is the fact the KAG traversal eventually lands on.
+      # ---------------------------------------------------------------------
+      maximum-pool-size: ${INVENTORY_POOL_SIZE:20}
+      # Hikari's own default, left deliberately alone.
+      #
+      # This was 3000 and it quietly broke the whole demo: under starvation the
+      # borrow wait is only ~2-3s, so a 3s timeout fired often enough to emit
+      # "Could not open JDBC Connection for transaction" into the logs. Those
+      # lines are a smoking gun, and the flat-log baseline read them and
+      # correctly named the pool -- destroying the one comparison the session
+      # exists to make. At 30s the wait never reaches the timeout, so
+      # inventory-svc blocks silently, returns slow 200s, and logs nothing.
+      # That silence IS the demo.
+      connection-timeout: 30000
+      pool-name: inventory-pool
+
+demo:
+  query-hold-ms: ${INVENTORY_QUERY_HOLD_MS:150}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  level:
+    com.zaxxer.hikari: INFO

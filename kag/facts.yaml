@@ -1,0 +1,73 @@
+# Ground-truth infrastructure facts.
+#
+# Telemetry alone cannot tell you that inventory-svc borrows from a pool of 20,
+# or that order-api and notification-svc share a host. That knowledge comes from
+# your CMDB / Helm values / Terraform state. In a real deployment you would
+# generate this file from those sources; here it is checked in so the demo is
+# reproducible.
+#
+# This file is the "K" in KAG. The traces are just observations on top of it.
+
+hosts:
+  - id: host-a
+    cores: 4
+    memory_gb: 8
+  - id: host-b
+    cores: 4
+    memory_gb: 8
+
+services:
+  - id: order-api
+    runs_on: host-a
+    port: 8081
+    role: edge
+  - id: inventory-svc
+    runs_on: host-b
+    port: 8082
+    role: internal
+  - id: notification-svc
+    runs_on: host-a
+    port: 8083
+    role: consumer
+  - id: broker
+    runs_on: host-b
+    port: 8084
+    role: infrastructure
+
+queues:
+  - id: order.events
+    hosted_by: broker
+    produced_by: [order-api]
+    consumed_by: [notification-svc]
+
+datastores:
+  - id: h2-inventory
+    engine: H2
+    used_by: inventory-svc
+
+# The connection pool is modelled as a first-class node rather than an attribute
+# of the service. That is the whole trick: a root cause you cannot name is a root
+# cause the graph can never return.
+connection_pools:
+  - id: inventory-pool
+    owned_by: inventory-svc
+    backs: h2-inventory
+    # Live capacity is probed at build time from /admin/pool; this is the baseline.
+    baseline_max_size: 20
+    config_key: spring.datasource.hikari.maximum-pool-size
+
+# Declared dependencies. Traces confirm these at runtime, but declaring them means
+# the graph is still useful for a path that carried no traffic in the window.
+dependencies:
+  - from: order-api
+    to: inventory-svc
+    kind: http
+  - from: notification-svc
+    to: inventory-svc
+    kind: http
+  - from: order-api
+    to: order.events
+    kind: publish
+  - from: notification-svc
+    to: order.events
+    kind: consume

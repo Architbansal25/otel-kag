@@ -1,0 +1,47 @@
+[
+  {
+    "id": "44",
+    "at": "2026-09-19T01:33:43",
+    "by": "ci-pipeline",
+    "note": "baseline release",
+    "target": "inventory-svc",
+    "changes": [
+      {
+        "key": "spring.datasource.hikari.maximum-pool-size",
+        "from": "",
+        "to": "20",
+        "configures": "inventory-pool"
+      }
+    ]
+  },
+  {
+    "id": "46",
+    "at": "2026-09-22T01:09:00",
+    "by": "platform-team",
+    "note": "raise consumer log level to DEBUG",
+    "target": "notification-svc",
+    "changes": [
+      {
+        "key": "logging.level.com.nagarro.demo.notification",
+        "from": "INFO",
+        "to": "DEBUG",
+        "configures": "notification-svc"
+      }
+    ]
+  },
+  {
+    "id": "47",
+    "at": "2026-09-22T01:34:02",
+    "by": "release-bot",
+    "note": "tune JDBC pool for cost savings",
+    "target": "inventory-svc",
+    "changes": [
+      {
+        "key": "spring.datasource.hikari.maximum-pool-size",
+        "from": "20",
+        "to": "2",
+        "configures": "inventory-pool"
+      }
+    ]
+  }
+]

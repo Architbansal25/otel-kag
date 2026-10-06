@@ -1,0 +1,18 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: notification-svc
+  artemis:
+    mode: native
+    broker-url: tcp://localhost:61616
+
+demo:
+  inventory-url: http://localhost:8082
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
