@@ -234,7 +234,10 @@ cmd_start() {
   echo "  inventory pool   http://localhost:8082/admin/pool"
   echo "  consumer stats   http://localhost:8083/admin/stats"
   echo ""
-  yellow "Next:  ./demo.sh load 300"
+  # Traffic is what the assistant observes: without requests there are no
+  # traces, and an injected delay or error has nothing to show up in.
+  yellow "Next:  open http://localhost:8090 and click 'Start steady traffic'"
+  echo   "       (terminal alternative: ./demo.sh load 300  = 5 min of orders, 8 workers)"
   echo ""
 }
 
