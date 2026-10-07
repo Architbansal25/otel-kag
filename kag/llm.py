@@ -13,7 +13,8 @@ Configure ONE of:
 
   Groq -- one variable is enough (base URL and model default sensibly)
       setx GROQ_API_KEY "gsk_..."
-      (optional) setx KAG_MODEL "llama-3.3-70b-versatile"
+      (optional) setx KAG_MODEL "openai/gpt-oss-120b"
+      Check it before going on stage:  py llm.py
 
   Anything OpenAI-compatible -- OpenAI, Azure, an internal gateway
       setx LLM_BASE_URL "https://api.groq.com/openai/v1"
@@ -35,7 +36,7 @@ import copy
 import json
 import os
 import time
-from typing import Any, Dict, Type, TypeVar
+from typing import Any, Dict, List, Type, TypeVar
 
 import requests
 from pydantic import BaseModel, ValidationError
@@ -64,12 +65,15 @@ class LLMError(RuntimeError):
 
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# Groq's named successor to llama-3.3-70b-versatile (retired on free/dev tiers, Aug 2026).
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 # The answer is a small JSON object (~1k tokens). OpenAI-compatible providers
 # get a tight cap because some (Groq's free tier) count the whole max_tokens
 # reservation against a per-minute token limit and reject large requests.
 OPENAI_STRUCTURED_MAX_TOKENS = 2000
+# Reasoning models (gpt-oss, qwen3) spend part of max_tokens thinking first.
+REASONING_MAX_TOKENS = 4000
 
 
 def _anthropic_key() -> str:
@@ -130,6 +134,8 @@ def model_name() -> str:
     if provider() == "anthropic":
         # A Groq/OpenAI model name sent to Anthropic is a guaranteed 404.
         return requested if requested.startswith("claude") else ANTHROPIC_DEFAULT_MODEL
+    if _substitute:
+        return _substitute   # the configured model turned out to be retired
     if requested.startswith("claude"):
         requested = ""   # and a Claude name sent to Groq/OpenAI is one too
     return requested or (GROQ_DEFAULT_MODEL if _is_groq() else OPENAI_DEFAULT_MODEL)
@@ -138,6 +144,8 @@ def model_name() -> str:
 def config_warning() -> str:
     """A one-line explanation when configuration is being reinterpreted, else ''."""
     requested = os.environ.get("KAG_MODEL", "").strip()
+    if _substitute_note:
+        return _substitute_note
     if os.environ.get("ANTHROPIC_API_KEY", "").strip().startswith("gsk_"):
         return ("ANTHROPIC_API_KEY holds a Groq key (gsk_...), so it is used for Groq. "
                 "Tidy-up: put it in GROQ_API_KEY and delete ANTHROPIC_API_KEY.")
@@ -269,23 +277,101 @@ def _post_openai(url: str, key: str, body: dict) -> requests.Response:
     return resp
 
 
-def _openai_compatible(prompt: str, system: str, max_tokens: int) -> str:
-    base, key = _base_url(), _openai_key()
+# --- surviving model retirements ------------------------------------------------
+# Hosted model ids come and go (Groq retired llama-3.3-70b-versatile on free and
+# developer tiers in August 2026). When the configured one is gone, ask the
+# provider what this key can use and take the best match, in this order.
+MODEL_PREFERENCE = ["openai/gpt-oss-120b", "gpt-oss-120b", "openai/gpt-oss-20b", "gpt-oss-20b",
+                    "llama-4-maverick", "llama-4-scout", "qwen", "llama-3.3-70b", "llama-3.1-8b",
+                    "gpt-4.1-mini", "gpt-4o-mini"]
+NOT_CHAT = ("whisper", "tts", "guard", "playai", "orpheus", "embed", "compound", "distil",
+            "moderation", "dall-e", "transcribe")
 
+_substitute = ""        # model chosen at runtime because the configured one is gone
+_substitute_note = ""
+
+
+def available_models() -> List[str]:
+    """Chat model ids this key can use, per the provider's /models endpoint."""
+    try:
+        resp = requests.get(f"{_base_url()}/models",
+                            headers={"Authorization": f"Bearer {_openai_key()}"}, timeout=15)
+        ids = [m.get("id", "") for m in resp.json().get("data", [])] if resp.ok else []
+    except (requests.RequestException, ValueError):
+        ids = []
+    return sorted(i for i in ids if i and not any(x in i.lower() for x in NOT_CHAT))
+
+
+def _model_missing(resp: requests.Response) -> bool:
+    text = resp.text.lower()
+    return resp.status_code in (400, 404) and (
+        "model_not_found" in text or "does not exist" in text or "decommissioned" in text)
+
+
+def _switch_model(gone: str) -> bool:
+    """Pick a replacement for a model the provider says is gone. True if found."""
+    global _substitute, _substitute_note
+    ids = [i for i in available_models() if i != gone]
+    choice = next((i for pref in MODEL_PREFERENCE for i in ids if pref in i), ids[0] if ids else "")
+    if not choice:
+        return False
+    _substitute = choice
+    _substitute_note = (f"{gone} is not available to this key (retired or not enabled), "
+                        f"so {choice} is used instead. Set KAG_MODEL to pick another.")
+    print("  LLM: " + _substitute_note)
+    return True
+
+
+def _is_reasoning(model: str) -> bool:
+    return "gpt-oss" in model or "qwen3" in model or model.startswith(("o1", "o3", "o4"))
+
+
+def _chat(messages: list, max_tokens: int, json_mode: bool = False) -> str:
+    """One chat completion, handling retired models, reasoning models and
+    providers that do not support JSON mode."""
+    base, key = _base_url(), _openai_key()
+    for _ in range(3):
+        model = model_name()
+        body = {"model": model, "messages": messages, "max_tokens": max_tokens}
+        if _is_reasoning(model):
+            # Thinking tokens count against max_tokens: leave room for them, and
+            # keep the thinking short so answers stay quick on stage.
+            body["max_tokens"] = max(max_tokens, REASONING_MAX_TOKENS)
+            effort = os.environ.get("KAG_EFFORT", "low").lower()
+            body["reasoning_effort"] = effort if effort in ("low", "medium", "high") else "low"
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        resp = _post_openai(f"{base}/chat/completions", key, body)
+        if resp.status_code == 200:
+            choice = resp.json()["choices"][0]
+            text = (choice.get("message") or {}).get("content") or ""
+            if not text.strip() and choice.get("finish_reason") == "length":
+                raise LLMError("the response hit max_tokens before finishing")
+            return text.strip()
+        if _model_missing(resp) and model != _substitute and _switch_model(model):
+            continue
+        if json_mode and resp.status_code == 400 and "response_format" in resp.text:
+            json_mode = False   # provider/model without JSON mode: ask in the prompt only
+            continue
+        raise LLMError(f"LLM returned {resp.status_code} for model {model}: {resp.text[:400]}")
+    raise LLMError("LLM call failed after switching models")
+
+
+def _extract_json(text: str) -> str:
+    """The JSON object in a reply, even if wrapped in ``` fences or prose."""
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1] if 0 <= start < end else text
+
+
+def _openai_compatible(prompt: str, system: str, max_tokens: int) -> str:
     messages = ([{"role": "system", "content": system}] if system else []) + [
         {"role": "user", "content": prompt}
     ]
-    resp = _post_openai(f"{base}/chat/completions", key,
-                        {"model": model_name(), "max_tokens": max_tokens, "messages": messages})
-    if resp.status_code != 200:
-        raise LLMError(f"LLM returned {resp.status_code}: {resp.text[:400]}")
-
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    return _chat(messages, max_tokens)
 
 
 def _openai_structured(prompt: str, schema: Type[T], system: str, max_tokens: int) -> T:
     """JSON mode + client-side validation, with one corrective retry."""
-    base, key = _base_url(), _openai_key()
     instructions = (system + "\n\n" if system else "") + (
         "Respond with a single JSON object and nothing else. It must validate "
         "against this JSON schema:\n" + json.dumps(strict_schema(schema)))
@@ -294,17 +380,30 @@ def _openai_structured(prompt: str, schema: Type[T], system: str, max_tokens: in
 
     last_error = ""
     for _ in range(2):
-        resp = _post_openai(f"{base}/chat/completions", key,
-                            {"model": model_name(), "max_tokens": max_tokens, "messages": messages,
-                             "response_format": {"type": "json_object"}})
-        if resp.status_code != 200:
-            raise LLMError(f"LLM returned {resp.status_code}: {resp.text[:400]}")
-        text = resp.json()["choices"][0]["message"]["content"].strip()
+        text = _chat(messages, max_tokens, json_mode=True)
         try:
-            return schema.model_validate_json(text)
+            return schema.model_validate_json(_extract_json(text))
         except ValidationError as exc:
             last_error = str(exc)
             messages += [{"role": "assistant", "content": text},
                          {"role": "user", "content": "That JSON is invalid: " + last_error
                           + "\nReturn the corrected JSON object only."}]
     raise LLMError(f"response did not match {schema.__name__}: {last_error[:400]}")
+
+
+if __name__ == "__main__":
+    # Quick pre-flight check:  py llm.py
+    print("provider :", provider_label())
+    print("model    :", model_name())
+    if config_warning():
+        print("note     :", config_warning())
+    if provider() == "openai":
+        print("base URL :", _base_url())
+        models = available_models()
+        print("your key can use:", ", ".join(models) if models else "(could not list models)")
+    if provider() != "none":
+        try:
+            reply = complete("Reply with exactly: OK", max_tokens=200)
+            print("test call:", reply[:80] or "(empty)", "| model:", model_name())
+        except LLMError as exc:
+            print("test call FAILED:", exc)
