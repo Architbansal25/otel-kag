@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import llm
 from assistant import DEFAULT_WINDOW, ask
 
 COLOUR = {"HEALTHY": "\033[0;32m", "DEGRADED": "\033[0;33m", "DOWN": "\033[0;31m"}
@@ -58,6 +59,8 @@ def main() -> int:
         print(f"  {COLOUR.get(s.status, '')}{s.status:<9}{RESET} {s.name:<17} {s.detail}")
     print()
     print(f"  confidence={r.confidence}  by={r.generated_by}  in {result.elapsed_s}s")
+    if llm.config_warning():
+        print("  note: " + llm.config_warning())
     if result.llm_error:
         print("  LLM error: " + result.llm_error[:300])
     print()

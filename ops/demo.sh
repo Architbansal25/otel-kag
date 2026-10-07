@@ -96,6 +96,7 @@ start_svc() {
     -Dotel.exporter.otlp.protocol=grpc \
     -Dotel.exporter.otlp.endpoint=http://localhost:4317 \
     -Dotel.traces.sampler=always_on \
+    -Dotel.bsp.schedule.delay=1000 \
     -Dotel.resource.attributes=host.name="$host",deployment.environment=demo \
     "$@" \
     -jar "$RUN_DIR/$name-1.0.0.jar" \
@@ -426,7 +427,8 @@ cmd_restart() {
   info=$(svc_info "$svc") || { red "Usage: ./demo.sh restart <broker|inventory-svc|order-api|notification-svc>"; return 1; }
   read -r host port <<< "$info"
   pkill -f "$svc-1.0.0.jar" >/dev/null 2>&1 && sleep 2
-  [ -f "$RUN_DIR/$svc-1.0.0.jar" ] || sync_jars
+  # Always re-sync: otherwise a restart after a rebuild quietly runs the old jar.
+  sync_jars || { red "jar sync failed"; return 1; }
   if [ "$svc" = inventory-svc ]; then
     start_inventory 20
   else

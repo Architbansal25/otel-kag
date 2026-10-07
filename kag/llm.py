@@ -58,20 +58,50 @@ class LLMError(RuntimeError):
     """The provider was reachable but the call failed."""
 
 
+def _keys() -> tuple:
+    return (bool(os.environ.get("ANTHROPIC_API_KEY")),
+            bool(os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")))
+
+
 def provider() -> str:
-    """Returns 'anthropic', 'openai' or 'none' based on what is configured."""
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    """Returns 'anthropic', 'openai' or 'none' based on what is configured.
+
+    KAG_PROVIDER=anthropic|openai forces the choice. Otherwise Anthropic wins
+    when its key is set -- unless KAG_MODEL names a non-Claude model AND an
+    OpenAI-compatible key is also set, which can only mean "use that one".
+    """
+    has_anthropic, has_openai = _keys()
+    forced = os.environ.get("KAG_PROVIDER", "").strip().lower()
+    if forced == "anthropic" and has_anthropic:
         return "anthropic"
-    if os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+    if forced in ("openai", "groq") and has_openai:
+        return "openai"
+    requested = os.environ.get("KAG_MODEL", "").strip()
+    if has_anthropic and has_openai and requested and not requested.startswith("claude"):
+        return "openai"
+    if has_anthropic:
+        return "anthropic"
+    if has_openai:
         return "openai"
     return "none"
 
 
 def model_name() -> str:
-    explicit = os.environ.get("KAG_MODEL")
-    if explicit:
-        return explicit
-    return ANTHROPIC_DEFAULT_MODEL if provider() == "anthropic" else OPENAI_DEFAULT_MODEL
+    requested = os.environ.get("KAG_MODEL", "").strip()
+    if provider() == "anthropic":
+        # A Groq/OpenAI model name sent to Anthropic is a guaranteed 404.
+        return requested if requested.startswith("claude") else ANTHROPIC_DEFAULT_MODEL
+    return requested or OPENAI_DEFAULT_MODEL
+
+
+def config_warning() -> str:
+    """A one-line explanation when KAG_MODEL is being ignored, else ''."""
+    requested = os.environ.get("KAG_MODEL", "").strip()
+    if provider() == "anthropic" and requested and not requested.startswith("claude"):
+        return (f"KAG_MODEL={requested} is not a Claude model, so it is ignored and "
+                f"{ANTHROPIC_DEFAULT_MODEL} is used. To use {requested}, also set "
+                "LLM_BASE_URL + LLM_API_KEY; to silence this, remove KAG_MODEL.")
+    return ""
 
 
 def complete(prompt: str, system: str = "", max_tokens: int = 1600) -> str:

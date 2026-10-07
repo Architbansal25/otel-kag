@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -72,6 +73,11 @@ IMPACT_DIRECTION: Dict[str, Optional[str]] = {
 ERROR_RATE_SYMPTOM_THRESHOLD = 0.05
 QUEUE_LAG_SYMPTOM_THRESHOLD_MS = 1000
 
+# A single endpoint counts as broken when at least this many calls failed and
+# they make up at least this share of its calls.
+ENDPOINT_MIN_FAILURES = 2
+ENDPOINT_FAILURE_RATIO = 0.5
+
 # A service can be the sick one without ever returning an error: under pool
 # starvation inventory-svc still answers 200, just slowly, and the timeout fires
 # one hop upstream. Latency is the only evidence that it is struggling, so it has
@@ -82,6 +88,7 @@ SLOW_SERVICE_P95_MS = 1000
 # first one after startup, while the JVM is still warming up. Do not call a
 # service slow on less evidence than this.
 MIN_REQUESTS_FOR_LATENCY = 8
+RECENT_MIN_REQUESTS = 3
 
 # "Right now" vs "in the window". The window answers what happened; the last
 # minute answers whether it is still happening.
@@ -216,13 +223,103 @@ def _span_kind(span: Dict[str, Any]) -> str:
     return ""
 
 
+# Health checks, admin probes and Swagger are the observers, not the system.
+# They are polled every couple of seconds and always succeed, so counting them
+# as "requests" buries a genuinely broken endpoint under a pile of 200s.
+INFRA_OPERATION = re.compile(r"/actuator|/admin/|/v3/api-docs|/swagger")
+
+
+def _is_infra_trace(spans: Iterable[Dict[str, Any]]) -> bool:
+    """Probe traffic, or work nobody asked for (e.g. schema SQL at startup)."""
+    spans = list(spans)
+    if not any(_span_kind(s) in ("server", "consumer") for s in spans):
+        return True  # no incoming request or message: not user traffic
+    roots = [s for s in spans if not any(r.get("refType") == "CHILD_OF"
+                                         for r in s.get("references", []))]
+    return bool(roots) and all(INFRA_OPERATION.search(str(s.get("operationName", "")))
+                               for s in roots)
+
+
+# A clean stretch this long separates one episode of trouble from the next.
+EPISODE_GAP_S = 30
+
+
+def episode_start(events: List[tuple]) -> Optional[float]:
+    """Start of the most recent run of bad requests.
+
+    `events` are (epoch_us, bad) pairs. Walks back from the latest bad request
+    until it finds EPISODE_GAP_S of good-only traffic: whatever was bad before
+    that belongs to an earlier incident, not this one.
+    """
+    events = sorted(events)
+    bad_times = [t for t, bad in events if bad]
+    if not bad_times:
+        return None
+    start = bad_times[-1]
+    clean_since = None
+    for t, bad in reversed(events):
+        if t > start:
+            continue
+        if bad:
+            start, clean_since = t, None
+        else:
+            clean_since = t if clean_since is None else clean_since
+            if (start - t) >= EPISODE_GAP_S * 1e6 and clean_since is not None:
+                break
+    return start
+
+
+def _latest_messages(timed: List[tuple], n: int = 3) -> List[str]:
+    """Most recent distinct error messages first: the current incident's, not
+    whatever failed first in the window."""
+    out: List[str] = []
+    for _, msg in sorted(timed, key=lambda x: x[0], reverse=True):
+        if msg not in out:
+            out.append(msg)
+        if len(out) == n:
+            break
+    return out
+
+
+def _has_tag(span: Dict[str, Any], key: str) -> bool:
+    return any(t.get("key") == key for t in span.get("tags", []))
+
+
+def _error_origins(spans_by_id: Dict[str, Dict[str, Any]], svc_of) -> set:
+    """Services where a failure in this trace STARTED, not merely passed through.
+
+    A failing span is the origin when none of its children failed, and it is not
+    a call out to another service (an HTTP client or message producer span fails
+    because the thing it called failed). Database calls do count: the service
+    owns its database access. Under pool starvation nothing in inventory-svc
+    fails -- order-api's client span times out -- so no service is an origin and
+    the ranking still has to find the cause by reasoning, as before.
+    """
+    failing = {sid for sid, sp in spans_by_id.items() if _span_error(sp)}
+    if not failing:
+        return set()
+    parents_of_failing = set()
+    for sid in failing:
+        for ref in spans_by_id[sid].get("references", []):
+            if ref.get("refType") == "CHILD_OF":
+                parents_of_failing.add(ref.get("spanID"))
+    origins = set()
+    for sid in failing - parents_of_failing:
+        sp = spans_by_id[sid]
+        outbound = _span_kind(sp) in ("client", "producer") and not _has_tag(sp, "db.system")
+        if not outbound:
+            origins.add(svc_of(sp))
+    return origins
+
+
 def _span_messages(span: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     for logrec in span.get("logs", []):
         for field in logrec.get("fields", []):
             if field.get("key") in ("event", "message", "error.message",
                                     "exception.message", "exception.type"):
-                if field.get("value"):
+                # "exception" is just the event's name, not information.
+                if field.get("value") and str(field["value"]) != "exception":
                     out.append(str(field["value"]))
     for tag in span.get("tags", []):
         if tag.get("key") in ("error.message", "exception.message"):
@@ -273,6 +370,7 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
     traces_touched: Dict[str, set] = {}
     traces_failed: Dict[str, set] = {}
     recent_cutoff_us = (time.time() - RECENT_SECONDS) * 1e6
+    origin_counts: Dict[str, int] = {}
 
     for service in services:
         for trace in fetch_traces(service, lookback):
@@ -283,10 +381,15 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
 
             processes = trace.get("processes", {}) or {}
             spans_by_id = {s.get("spanID"): s for s in trace.get("spans", []) if s.get("spanID")}
+            if _is_infra_trace(spans_by_id.values()):
+                continue
 
             def svc_of(span: Dict[str, Any]) -> str:
                 proc = processes.get(span.get("processID", "")) or {}
                 return proc.get("serviceName", "unknown")
+
+            for origin in _error_origins(spans_by_id, svc_of):
+                origin_counts[origin] = origin_counts.get(origin, 0) + 1
 
             for span in spans_by_id.values():
                 owner = svc_of(span)
@@ -296,7 +399,8 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
                                               "last_ok": None, "last_seen": None,
                                               "first_slow": None,
                                               "recent_touched": set(), "recent_failed": set(),
-                                              "recent_durations": [], "codes": Counter()})
+                                              "recent_durations": [], "codes": Counter(),
+                                              "endpoints": {}, "entry_events": []})
                 start = span.get("startTime") or 0
                 duration_ms = span.get("duration", 0) / 1000.0  # us -> ms
                 # Latency is what a caller waits for, so it is measured on entry
@@ -310,6 +414,22 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
                 if recent:
                     st["recent_touched"].add(trace_id)
                 if entry:
+                    # Per-endpoint view: one broken endpoint on an otherwise
+                    # healthy service is invisible in a service-wide error rate.
+                    ep = st["endpoints"].setdefault(str(span.get("operationName")), {
+                        "total": 0, "failed": 0, "first_error": None, "last_error": None,
+                        "last_at": 0, "last_failed": False, "codes": Counter()})
+                    ep["total"] += 1
+                    failed_now = _span_error(span)
+                    st["entry_events"].append((start, failed_now, duration_ms >= SLOW_SERVICE_P95_MS))
+                    if failed_now:
+                        ep["failed"] += 1
+                        ep["first_error"] = min(ep["first_error"] or start, start)
+                        ep["last_error"] = max(ep["last_error"] or 0, start)
+                        if _status_code(span):
+                            ep["codes"][_status_code(span)] += 1
+                    if start >= ep["last_at"]:
+                        ep["last_at"], ep["last_failed"] = start, failed_now
                     st["durations"].append(duration_ms)
                     if recent:
                         st["recent_durations"].append(duration_ms)
@@ -327,7 +447,7 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
                         st["recent_failed"].add(trace_id)
                     traces_failed.setdefault(owner, set()).add(trace_id)
                     msgs = _span_messages(span)
-                    st["messages"].extend(msgs)
+                    st["messages"].extend((start, m) for m in msgs)
                     detail = " -- " + msgs[0] if msgs else ""
                     tg.attach(owner, Evidence(
                         kind="span",
@@ -368,10 +488,26 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
         recent_p95 = (recent_durations[min(int(len(recent_durations) * 0.95),
                                            len(recent_durations) - 1)]
                       if recent_durations else 0.0)
+        recent_failed = len(st["recent_failed"])
+        recent_error_rate = recent_failed / recent_touched if recent_touched else 0.0
+
+        # A fresh incident is a small slice of a 5-minute window -- and a slow
+        # one shrinks its own slice, because slow requests mean fewer requests.
+        # So judge on whichever is worse: the whole window, or the last minute.
+        window_error_rate = error_rate
+        if recent_touched >= RECENT_MIN_REQUESTS and recent_error_rate > error_rate:
+            error_rate, failed, touched_shown = recent_error_rate, recent_failed, recent_touched
+            rate_basis = "in the last minute"
+        else:
+            touched_shown, rate_basis = touched, "in the last " + lookback
+        p95_shown, p95_n = p95, len(durations)
+        if (len(recent_durations) >= MIN_REQUESTS_FOR_LATENCY and recent_p95 > p95):
+            p95_shown, p95_n = recent_p95, len(recent_durations)
         tg.g.nodes[service].update(span_count=st["total"],
                                    request_count=touched,
                                    failed_requests=failed,
                                    error_rate=round(error_rate, 3),
+                                   window_error_rate=round(window_error_rate, 3),
                                    p95_ms=round(p95, 1),
                                    recent_requests=recent_touched,
                                    recent_error_rate=round(
@@ -383,19 +519,27 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
                                    last_ok_at=fmt_ts(st["last_ok"]),
                                    last_seen_at=fmt_ts(st["last_seen"]),
                                    first_slow_at=fmt_ts(st["first_slow"]),
-                                   error_codes=dict(st["codes"]))
+                                   error_episode_at=fmt_ts(episode_start(
+                                       [(t, f) for t, f, _ in st["entry_events"]])),
+                                   slow_episode_at=fmt_ts(episode_start(
+                                       [(t, sl) for t, _, sl in st["entry_events"]])),
+                                   error_codes=dict(st["codes"]),
+                                   _entry_events=st["entry_events"])
 
-        if p95 >= SLOW_SERVICE_P95_MS and touched >= MIN_REQUESTS_FOR_LATENCY:
+        if p95_shown >= SLOW_SERVICE_P95_MS and p95_n >= MIN_REQUESTS_FOR_LATENCY:
             tg.g.nodes[service]["slow"] = True
             tg.attach(service, Evidence(
                 "metric", "jaeger:" + service,
-                "p95 latency " + str(round(p95, 1)) + " ms over "
-                + str(len(durations)) + " handled requests"))
+                "p95 latency " + str(round(p95_shown, 1)) + " ms over "
+                + str(p95_n) + " handled requests"
+                + (", slow since " + str(fmt_ts(episode_start(
+                    [(t, sl) for t, _, sl in st["entry_events"]]))))))
 
         if error_rate >= ERROR_RATE_SYMPTOM_THRESHOLD:
             sym = tg.node("symptom:" + service + ":errors", "Symptom",
                           title=service + " failing " + format(error_rate, ".0%")
-                                + " of requests (" + str(failed) + "/" + str(touched) + ")",
+                                + " of requests " + rate_basis
+                                + " (" + str(failed) + "/" + str(touched_shown) + ")",
                           severity=round(error_rate, 3))
             tg.edge(service, sym, "MANIFESTS_AS")
             tg.attach(sym, Evidence(
@@ -405,21 +549,65 @@ def ingest_traces(tg: TelemetryGraph, services: Iterable[str], lookback: str = "
                 + (", status codes " + ", ".join(
                     code + " x" + str(n) for code, n in st["codes"].most_common())
                    if st["codes"] else "")))
-            for msg in list(dict.fromkeys(st["messages"]))[:3]:
+            for msg in _latest_messages(st["messages"]):
                 tg.attach(sym, Evidence("log", "jaeger:" + service, msg))
 
         # Slowness only hurts users at the edge. Inner services being slow is a
         # clue, not a symptom -- it is how the cause looks from the outside.
-        if (p95 >= SLOW_SERVICE_P95_MS and touched >= MIN_REQUESTS_FOR_LATENCY
+        if (p95_shown >= SLOW_SERVICE_P95_MS and p95_n >= MIN_REQUESTS_FOR_LATENCY
                 and tg.g.nodes[service].get("role") == "edge"
                 and error_rate < ERROR_RATE_SYMPTOM_THRESHOLD):
             sym = tg.node("symptom:" + service + ":latency", "Symptom",
-                          title=service + " p95 latency " + str(round(p95)) + " ms",
+                          title=service + " p95 latency " + str(round(p95_shown)) + " ms",
                           severity=min(1.0, p95 / 5000.0))
             tg.edge(service, sym, "MANIFESTS_AS")
             tg.attach(sym, Evidence("metric", "jaeger:" + service,
                                     "requests slower than " + str(SLOW_SERVICE_P95_MS)
                                     + " ms since " + str(fmt_ts(st["first_slow"]))))
+
+        # Failures that start inside this service (its own code or database),
+        # rather than arriving from something it called, make it independently
+        # broken -- which is what lets it beat a merely adjacent candidate.
+        if origin_counts.get(service, 0) >= ENDPOINT_MIN_FAILURES:
+            tg.g.nodes[service]["anomalous"] = True
+            tg.g.nodes[service]["error_origin_requests"] = origin_counts[service]
+            tg.attach(service, Evidence(
+                "span", "jaeger:" + service,
+                f"{origin_counts[service]} failed requests started inside {service} "
+                "(not in anything it calls)"))
+
+        # Endpoints that are failing even though the service as a whole is not.
+        broken = []
+        for op, ep in st["endpoints"].items():
+            if ep["failed"] >= ENDPOINT_MIN_FAILURES and ep["failed"] / ep["total"] >= ENDPOINT_FAILURE_RATIO:
+                codes = ", ".join(f"HTTP {c} x{n}" for c, n in ep["codes"].most_common())
+                broken.append({
+                    "endpoint": op, "failed": ep["failed"], "total": ep["total"],
+                    "first_error_at": fmt_ts(ep["first_error"]),
+                    "last_error_at": fmt_ts(ep["last_error"]),
+                    # Only "still" failing if someone called it recently and it
+                    # failed; an endpoint nobody has retried is history, not news.
+                    "still_failing": ep["last_failed"] and ep["last_at"] >= recent_cutoff_us,
+                    "codes": codes})
+        tg.g.nodes[service]["failing_endpoints"] = broken
+        tg.g.nodes[service]["healthy_endpoints"] = sorted(
+            op for op, ep in st["endpoints"].items() if ep["failed"] == 0)
+        for b in broken:
+            tg.attach(service, Evidence(
+                "span", "jaeger:" + service,
+                f"{b['endpoint']} failed {b['failed']} of {b['total']} calls"
+                + (f" ({b['codes']})" if b["codes"] else "")
+                + f", first at {b['first_error_at']}, last at {b['last_error_at']}"
+                + ("; most recent call failed" if b["still_failing"] else "; has since succeeded")))
+            if error_rate < ERROR_RATE_SYMPTOM_THRESHOLD and b["still_failing"]:
+                sym = tg.node("symptom:" + service + ":" + b["endpoint"], "Symptom",
+                              title=f"{service} {b['endpoint']} failing "
+                                    f"({b['failed']}/{b['total']} calls)",
+                              severity=round(b["failed"] / b["total"], 3))
+                tg.edge(service, sym, "MANIFESTS_AS")
+                tg.attach(sym, tg.g.nodes[service]["evidence"][-1])
+                for msg in _latest_messages(st["messages"]):
+                    tg.attach(sym, Evidence("log", "jaeger:" + service, msg))
 
 
 # --- 3. live probes --------------------------------------------------------
@@ -541,6 +729,19 @@ def apply_health_events(tg: TelemetryGraph, max_age_min: float = 60.0) -> None:
             attrs["recovered_at"] = ev.get("at")
 
 
+def bound_episodes(tg: TelemetryGraph) -> None:
+    """A restart ends an episode: failures from before a service last came back
+    UP belong to the previous incident, however short the gap was."""
+    for service in tg.nodes_of("Service"):
+        a = tg.g.nodes[service]
+        if not a.get("recovered_at") or not a.get("_entry_events"):
+            continue
+        cut = datetime.strptime(a["recovered_at"], "%Y-%m-%d %H:%M:%S").timestamp() * 1e6
+        after = [e for e in a["_entry_events"] if e[0] >= cut]
+        a["error_episode_at"] = fmt_ts(episode_start([(t, f) for t, f, _ in after]))
+        a["slow_episode_at"] = fmt_ts(episode_start([(t, sl) for t, _, sl in after]))
+
+
 def exonerate(tg: TelemetryGraph) -> None:
     """Rules out components that live evidence says are fine.
 
@@ -602,6 +803,7 @@ def build(lookback: str = "15m", probe: bool = True) -> TelemetryGraph:
     if probe:
         probe_runtime(tg)
         apply_health_events(tg)
+        bound_episodes(tg)
         exonerate(tg)
     load_deploys(tg, HERE / "deploys.json")
     return tg
