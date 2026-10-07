@@ -12,8 +12,11 @@ setlocal
 title OTel + KAG demo
 
 set "ROOT=%~dp0"
-set "DEMOSH=/mnt/c/Project/flo/flo2026 demo/otel-kag/ops/demo.sh"
 set "DISTRO=Ubuntu-22.04"
+rem demo.sh as WSL sees it, wherever this folder is checked out.
+set "DEMOSH="
+for /f "usebackq delims=" %%i in (`wsl -d %DISTRO% -e wslpath -a "%~dp0ops\demo.sh"`) do set "DEMOSH=%%i"
+if not defined DEMOSH set "DEMOSH=/mnt/c/Project/flo/flo2026 demo/otel-kag/ops/demo.sh"
 
 echo.
 echo === OTel + KAG demo ===
@@ -79,9 +82,10 @@ start "" http://localhost:8090
 echo.
 echo Ready.
 echo   Console     http://localhost:8090   ^<- drive the whole demo here
+echo   Swagger     http://localhost:8081/swagger-ui.html
+echo   Health      http://localhost:8081/actuator/health
 echo   Jaeger UI   http://localhost:16686
 echo.
-echo Maximise the browser (needs ^>=1600px for side-by-side panels).
 echo Stop everything with STOP-DEMO.cmd
 echo.
 goto :end

@@ -7,12 +7,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+import java.util.Map;
+
 @Service
 public class InventoryService {
 
     private static final Logger log = LoggerFactory.getLogger(InventoryService.class);
 
     private final JdbcTemplate jdbc;
+    private final Chaos chaos;
 
     /**
      * How long a reservation keeps its JDBC connection checked out.
@@ -24,8 +28,9 @@ public class InventoryService {
     @Value("${demo.query-hold-ms:150}")
     private long queryHoldMs;
 
-    public InventoryService(JdbcTemplate jdbc) {
+    public InventoryService(JdbcTemplate jdbc, Chaos chaos) {
         this.jdbc = jdbc;
+        this.chaos = chaos;
     }
 
     /**
@@ -38,6 +43,7 @@ public class InventoryService {
                 "SELECT quantity FROM stock WHERE sku = ?", Integer.class, sku);
 
         holdConnection();
+        chaos.apply();
 
         if (available == null || available <= 0) {
             throw new OutOfStockException(sku);
@@ -51,7 +57,16 @@ public class InventoryService {
         Integer quantity = jdbc.queryForObject(
                 "SELECT quantity FROM stock WHERE sku = ?", Integer.class, sku);
         holdConnection();
+        chaos.apply();
         return quantity == null ? 0 : quantity;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> all() {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT sku AS \"sku\", quantity AS \"quantity\" FROM stock ORDER BY sku");
+        chaos.apply();
+        return rows;
     }
 
     private void holdConnection() {

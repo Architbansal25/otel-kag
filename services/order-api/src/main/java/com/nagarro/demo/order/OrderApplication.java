@@ -1,5 +1,7 @@
 package com.nagarro.demo.order;
 
+import io.swagger.v3.oas.annotations.OpenAPIDefinition;
+import io.swagger.v3.oas.annotations.info.Info;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.web.client.RestClientCustomizer;
@@ -9,6 +11,8 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 
+@OpenAPIDefinition(info = @Info(title = "order-api", version = "1.0.0",
+        description = "Customer-facing order API. Calls inventory-svc and publishes order events."))
 @SpringBootApplication
 public class OrderApplication {
 
@@ -18,7 +22,7 @@ public class OrderApplication {
 
     /**
      * The downstream client. The 2s read timeout is deliberately SHORTER than
-     * inventory-svc's 3s Hikari connection-timeout: under pool starvation this
+     * the time inventory-svc can spend waiting on its pool: under pool starvation this
      * service gives up first, so the visible failure is a 504 here while the
      * actual cause stays buried two hops away. That asymmetry is the demo.
      */

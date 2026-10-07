@@ -1,5 +1,7 @@
 package com.nagarro.demo.broker;
 
+import io.swagger.v3.oas.annotations.OpenAPIDefinition;
+import io.swagger.v3.oas.annotations.info.Info;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jms.artemis.ArtemisConfigurationCustomizer;
@@ -12,6 +14,8 @@ import org.springframework.context.annotation.Bean;
  * order-api and notification-svc are separate processes. The customizer below
  * adds a TCP acceptor so they can both connect to tcp://localhost:61616.
  */
+@OpenAPIDefinition(info = @Info(title = "broker", version = "1.0.0",
+        description = "Embedded JMS broker hosting the order.events queue."))
 @SpringBootApplication
 public class BrokerApplication {
 

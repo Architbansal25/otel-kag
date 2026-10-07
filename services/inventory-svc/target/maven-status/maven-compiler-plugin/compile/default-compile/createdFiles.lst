@@ -1,4 +1,3 @@
-com\nagarro\demo\inventory\InventoryService$OutOfStockException.class
-com\nagarro\demo\inventory\InventoryService.class
-com\nagarro\demo\inventory\InventoryApplication.class
-com\nagarro\demo\inventory\InventoryController.class
+com/nagarro/demo/inventory/TraceIdFilter.class
+com/nagarro/demo/inventory/Chaos.class
+com/nagarro/demo/inventory/ChaosController.class

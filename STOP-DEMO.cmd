@@ -5,8 +5,11 @@ rem  Batch rather than PowerShell: WDAC blocks .ps1 on this machine.
 rem ============================================================================
 setlocal
 
-set "DEMOSH=/mnt/c/Project/flo/flo2026 demo/otel-kag/ops/demo.sh"
 set "DISTRO=Ubuntu-22.04"
+rem demo.sh as WSL sees it, wherever this folder is checked out.
+set "DEMOSH="
+for /f "usebackq delims=" %%i in (`wsl -d %DISTRO% -e wslpath -a "%~dp0ops\demo.sh"`) do set "DEMOSH=%%i"
+if not defined DEMOSH set "DEMOSH=/mnt/c/Project/flo/flo2026 demo/otel-kag/ops/demo.sh"
 
 echo.
 echo Stopping the console...

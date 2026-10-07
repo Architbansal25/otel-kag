@@ -8,19 +8,31 @@
 # to Windows localhost -- so the Python KAG engine, the browser and Jaeger's UI
 # all still work from Windows exactly as if the services ran natively.
 #
-#   ./demo.sh deps          download Jaeger (Linux) -- once
-#   ./demo.sh start         start Jaeger + all four services (healthy)
-#   ./demo.sh scenario 1    poison message
-#   ./demo.sh scenario 2    connection pool starvation
-#   ./demo.sh reset         back to healthy
-#   ./demo.sh load [secs]   generate traffic
-#   ./demo.sh status        what is up
-#   ./demo.sh stop          stop everything
-#   ./demo.sh logs <svc>    tail a service log
+#   ./demo.sh deps               download Jaeger (Linux) -- once
+#   ./demo.sh build              rebuild the service jars (needs Maven)
+#   ./demo.sh start              start Jaeger + all four services (healthy)
+#   ./demo.sh load [secs]        generate traffic
+#   ./demo.sh status             what is up
+#
+#   Breaking things live (the audience never sees these):
+#   ./demo.sh chaos latency <ms> slow down every inventory data fetch
+#   ./demo.sh chaos errors <0-1> fail that fraction of inventory fetches
+#   ./demo.sh chaos clear        remove injected latency / errors
+#   ./demo.sh kill <svc>         stop one service (simulates a crash)
+#   ./demo.sh restart <svc>      bring one service back
+#   ./demo.sh heal               clear chaos and restart anything that is down
+#
+#   ./demo.sh scenario 1         poison message
+#   ./demo.sh scenario 2         connection pool starvation (bad deploy)
+#   ./demo.sh reset              back to healthy
+#   ./demo.sh stop               stop everything
+#   ./demo.sh logs <svc>         tail a service log
 # =============================================================================
 set -uo pipefail
 
-WIN_ROOT="/mnt/c/Project/flo/flo2026 demo/otel-kag"
+# The repo root, wherever it is checked out (/mnt/c/... under WSL, or anywhere
+# on Linux/macOS). Override with DEMO_ROOT if you really need to.
+WIN_ROOT="${DEMO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # Jars are copied out of /mnt/c into the WSL filesystem: starting from /mnt/c
 # takes ~22s per service, from ext4 it is ~4s. That matters when you redeploy
 # inventory-svc live in front of the room.
@@ -53,9 +65,17 @@ sync_jars() {
 
 wait_health() {
   local name=$1 port=$2 timeout=${3:-90} i
+  local body
   for ((i = 0; i < timeout; i++)); do
-    if curl -sf --max-time 2 "http://localhost:$port/actuator/health" 2>/dev/null | grep -q '"UP"'; then
+    # Started = the health endpoint answers. It may answer DOWN (503) when a
+    # dependency is missing -- e.g. the broker is the thing that was killed --
+    # and waiting for UP would then hang for the full timeout.
+    body=$(curl -s --max-time 2 "http://localhost:$port/actuator/health" 2>/dev/null)
+    if printf '%s' "$body" | grep -q '"status":"UP"'; then
       green "  [up]   $name"
+      return 0
+    elif printf '%s' "$body" | grep -q '"status"'; then
+      yellow "  [up]   $name (running, but a dependency is DOWN)"
       return 0
     fi
     sleep 1
@@ -81,6 +101,21 @@ start_svc() {
     -jar "$RUN_DIR/$name-1.0.0.jar" \
     > "$LOG_DIR/$name.log" 2>&1 &
   echo "  [..]   $name starting (host=$host)"
+}
+
+# name -> "host port"
+svc_info() {
+  case "$1" in
+    broker)           echo "host-b 8084" ;;
+    inventory-svc)    echo "host-b 8082" ;;
+    order-api)        echo "host-a 8081" ;;
+    notification-svc) echo "host-a 8083" ;;
+    *) return 1 ;;
+  esac
+}
+
+is_up() {
+  curl -sf --max-time 2 "http://localhost:$1/actuator/health" >/dev/null 2>&1
 }
 
 record_deploy() {
@@ -130,7 +165,9 @@ cmd_deps() {
   local url
   url=$(curl -s "https://api.github.com/repos/jaegertracing/jaeger/releases?per_page=60" \
         | grep -o 'https://[^"]*jaeger-1\.[0-9.]*-linux-amd64\.tar\.gz' | head -1)
-  [ -n "$url" ] || { red "Could not resolve a Jaeger linux release URL"; return 1; }
+  # The releases API is rate-limited and often blocked on corporate networks;
+  # fall back to a known-good pinned release rather than failing.
+  [ -n "$url" ] || url="https://github.com/jaegertracing/jaeger/releases/download/v1.62.0/jaeger-1.62.0-linux-amd64.tar.gz"
   echo "Downloading $(basename "$url")"
   curl -sL "$url" -o /tmp/jaeger.tar.gz || { red "download failed"; return 1; }
   tar -xzf /tmp/jaeger.tar.gz -C "$RUN_DIR" --strip-components=1 \
@@ -190,7 +227,9 @@ cmd_start() {
   echo ""
   green "Ready. From Windows these are all on localhost:"
   echo "  Jaeger UI        http://localhost:16686"
-  echo "  order-api        http://localhost:8081/orders   (POST)"
+  echo "  order-api        http://localhost:8081/swagger-ui.html"
+  echo "  inventory-svc    http://localhost:8082/swagger-ui.html"
+  echo "  health           http://localhost:8081/actuator/health"
   echo "  inventory pool   http://localhost:8082/admin/pool"
   echo "  consumer stats   http://localhost:8083/admin/stats"
   echo ""
@@ -320,6 +359,7 @@ cmd_status() {
   echo ""
   echo "pool:  $(curl -s --max-time 2 http://localhost:8082/admin/pool || echo n/a)"
   echo "queue: $(curl -s --max-time 2 http://localhost:8083/admin/stats || echo n/a)"
+  echo "chaos: $(curl -s --max-time 2 http://localhost:8082/admin/chaos || echo n/a)"
   echo ""
 }
 
@@ -345,6 +385,71 @@ cmd_stop() {
   echo ""
 }
 
+cmd_build() {
+  command -v mvn >/dev/null 2>&1 || { red "Maven (mvn) not found"; return 1; }
+  (cd "$WIN_ROOT/services" && mvn -q -B package -DskipTests) \
+    && green "Jars rebuilt under services/*/target" || { red "build failed"; return 1; }
+}
+
+cmd_chaos() {
+  local what=${1:-} value=${2:-}
+  is_up 8082 || { red "inventory-svc is not running"; return 1; }
+  case "$what" in
+    latency)
+      [ -n "$value" ] || { red "Usage: ./demo.sh chaos latency <ms>"; return 1; }
+      curl -s -X POST "http://localhost:8082/admin/chaos/latency?ms=$value"; echo
+      yellow "  inventory-svc data fetches now take +${value} ms" ;;
+    errors)
+      [ -n "$value" ] || { red "Usage: ./demo.sh chaos errors <0-1>"; return 1; }
+      curl -s -X POST "http://localhost:8082/admin/chaos/errors?rate=$value"; echo
+      yellow "  inventory-svc now fails ${value} of data fetches" ;;
+    clear)
+      curl -s -X DELETE "http://localhost:8082/admin/chaos"; echo
+      green "  chaos cleared" ;;
+    *)
+      red "Usage: ./demo.sh chaos [latency <ms>|errors <0-1>|clear]"; return 1 ;;
+  esac
+}
+
+cmd_kill() {
+  local svc=${1:-}
+  svc_info "$svc" >/dev/null || { red "Usage: ./demo.sh kill <broker|inventory-svc|order-api|notification-svc>"; return 1; }
+  if pkill -f "$svc-1.0.0.jar" >/dev/null 2>&1; then
+    red "  [killed] $svc"
+  else
+    yellow "  $svc was not running"
+  fi
+}
+
+cmd_restart() {
+  local svc=${1:-} info host port
+  info=$(svc_info "$svc") || { red "Usage: ./demo.sh restart <broker|inventory-svc|order-api|notification-svc>"; return 1; }
+  read -r host port <<< "$info"
+  pkill -f "$svc-1.0.0.jar" >/dev/null 2>&1 && sleep 2
+  [ -f "$RUN_DIR/$svc-1.0.0.jar" ] || sync_jars
+  if [ "$svc" = inventory-svc ]; then
+    start_inventory 20
+  else
+    start_svc "$svc" "$host"
+    wait_health "$svc" "$port"
+  fi
+}
+
+cmd_heal() {
+  echo ""
+  yellow "Healing: clearing chaos and restarting anything that is down"
+  local svc info host port
+  for svc in broker inventory-svc order-api notification-svc; do
+    read -r host port <<< "$(svc_info "$svc")"
+    if ! is_up "$port"; then
+      cmd_restart "$svc"
+    fi
+  done
+  is_up 8082 && curl -s -X DELETE "http://localhost:8082/admin/chaos" >/dev/null && green "  chaos cleared"
+  green "  Healthy."
+  echo ""
+}
+
 cmd_logs() {
   local svc=${1:-}
   [ -n "$svc" ] || { red "Usage: ./demo.sh logs <broker|inventory-svc|order-api|notification-svc|jaeger>"; return 1; }
@@ -353,6 +458,11 @@ cmd_logs() {
 
 case "${1:-}" in
   deps)     cmd_deps ;;
+  build)    cmd_build ;;
+  chaos)    cmd_chaos "${2:-}" "${3:-}" ;;
+  kill)     cmd_kill "${2:-}" ;;
+  restart)  cmd_restart "${2:-}" ;;
+  heal)     cmd_heal ;;
   start)    cmd_start "${2:-20}" ;;
   load)     cmd_load "${2:-300}" "${3:-8}" ;;
   scenario) cmd_scenario "${2:-}" ;;
@@ -361,6 +471,6 @@ case "${1:-}" in
   stop)     cmd_stop ;;
   logs)     cmd_logs "${2:-}" ;;
   *)
-    sed -n '3,22p' "$0" | sed 's/^# \?//'
+    sed -n '3,34p' "$0" | sed 's/^# \?//'
     ;;
 esac

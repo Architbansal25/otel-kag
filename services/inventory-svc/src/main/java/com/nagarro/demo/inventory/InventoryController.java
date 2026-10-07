@@ -2,6 +2,10 @@ package com.nagarro.demo.inventory;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
+import io.swagger.v3.oas.annotations.Hidden;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -12,8 +16,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.Map;
 
+@Tag(name = "Inventory", description = "Stock levels and reservations")
 @RestController
 public class InventoryController {
 
@@ -27,14 +33,24 @@ public class InventoryController {
         this.dataSource = dataSource;
     }
 
+    @Operation(summary = "List all products and their stock levels")
+    @GetMapping("/inventory")
+    public List<Map<String, Object>> all() {
+        return inventory.all();
+    }
+
+    @Operation(summary = "Reserve one unit of a product")
     @PostMapping("/inventory/{sku}/reserve")
-    public Map<String, Object> reserve(@PathVariable String sku) {
+    public Map<String, Object> reserve(
+            @Parameter(example = "SKU-1001") @PathVariable String sku) {
         int remaining = inventory.reserve(sku);
         return Map.of("sku", sku, "reserved", 1, "remaining", remaining);
     }
 
+    @Operation(summary = "Current stock level for one product")
     @GetMapping("/inventory/{sku}/stock")
-    public Map<String, Object> stock(@PathVariable String sku) {
+    public Map<String, Object> stock(
+            @Parameter(example = "SKU-1001") @PathVariable String sku) {
         return Map.of("sku", sku, "quantity", inventory.stock(sku));
     }
 
@@ -43,6 +59,7 @@ public class InventoryController {
      * record the ConnectionPool node's capacity as a fact -- it is the property
      * that "deploy #47" changes, and the one the causal chain ultimately names.
      */
+    @Hidden
     @GetMapping("/admin/pool")
     public Map<String, Object> pool() {
         if (dataSource instanceof HikariDataSource hikari) {
@@ -62,5 +79,11 @@ public class InventoryController {
         log.warn("Reservation rejected: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("error", "out_of_stock", "message", e.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.dao.EmptyResultDataAccessException.class)
+    public ResponseEntity<Map<String, Object>> unknownSku() {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", "unknown_sku"));
     }
 }

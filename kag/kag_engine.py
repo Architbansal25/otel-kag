@@ -123,6 +123,8 @@ def _corroboration(attrs: dict) -> float:
     """
     if attrs.get("kind") == "Symptom":
         return 1.0
+    if attrs.get("exonerated"):
+        return 0.0  # probed and found healthy: a chain through it is not corroborated
     if attrs.get("anomalous"):
         return 1.0
     error_rate = attrs.get("error_rate")
@@ -151,7 +153,11 @@ def _mechanism_score(tg: TelemetryGraph, paths: List[List[str]]) -> float:
     for path in paths:
         middle = path[1:-1]  # exclude the candidate itself and the symptom
         if not middle:
-            per_path.append(0.0)
+            # The candidate surfaces the symptom directly. That is only a proven
+            # mechanism when the candidate itself is independently known to be
+            # broken (e.g. its health check fails) -- otherwise it is merely the
+            # place the pain shows up.
+            per_path.append(1.0 if tg.g.nodes[path[0]].get("anomalous") else 0.0)
             continue
         per_path.append(
             sum(_corroboration(tg.g.nodes[n]) for n in middle) / len(middle))
@@ -187,6 +193,8 @@ def rank(tg: TelemetryGraph, max_hops: int = MAX_HOPS, top_n: int = 5) -> List[C
     for node_id, depth in reachable_depth.items():
         attrs = tg.g.nodes[node_id]
         kind = attrs.get("kind", "?")
+        if attrs.get("exonerated"):
+            continue  # live probes say this component is fine
 
         # Which symptoms would this node, if broken, actually produce?
         downstream = nx.descendants(impact, node_id)
@@ -244,9 +252,10 @@ def rank(tg: TelemetryGraph, max_hops: int = MAX_HOPS, top_n: int = 5) -> List[C
 # --- stage 4: serialize the retrieved subgraph ----------------------------
 def _describe_node(tg: TelemetryGraph, node_id: str) -> str:
     attrs = tg.g.nodes.get(node_id, {})
-    interesting = ("kind", "role", "error_rate", "p95_ms", "span_count", "max_size",
-                   "baseline_max_size", "active", "awaiting", "last_lag_ms", "value",
-                   "previous", "key", "at", "by", "note", "title", "engine")
+    interesting = ("kind", "role", "health_status", "error_rate", "p95_ms", "span_count",
+                   "max_size", "baseline_max_size", "active", "awaiting", "last_lag_ms",
+                   "value", "previous", "key", "at", "by", "note", "title", "engine",
+                   "first_error_at", "last_error_at", "last_seen_at", "down_since")
     bits = [k + "=" + str(attrs[k]) for k in interesting if attrs.get(k) is not None]
     return node_id + " [" + ", ".join(bits) + "]"
 
@@ -262,7 +271,35 @@ def _render_path(tg: TelemetryGraph, path: List[str]) -> str:
     return "".join(parts)
 
 
-def build_prompt(tg: TelemetryGraph, candidates: List[Candidate]) -> str:
+# How to read an impact edge u -> v ("u failing hurts v") out loud.
+SPOKEN = {
+    "CALLS": "is called by",
+    "PUBLISHES_TO": "is published to by",
+    "CONSUMES_FROM": "is linked through the queue to",
+    "USES_POOL": "is the connection pool of",
+    "BACKED_BY": "is the database behind",
+    "RUNS_ON": "is the host of",
+    "HOSTS": "hosts the queue",
+    "CO_TENANT_OF": "shares a host with",
+    "CONFIGURES": "configures",
+    "CHANGED_IN": "changed",
+}
+
+
+def explain_path(tg: TelemetryGraph, path: List[str]) -> List[str]:
+    """A causal path as plain-language steps, for people rather than graphs."""
+    impact = tg.impact_graph()
+    steps = []
+    for u, v in zip(path, path[1:]):
+        rel = impact.get_edge_data(u, v, {}).get("rel", "?")
+        if rel == "MANIFESTS_AS":
+            steps.append("users see it: " + str(tg.g.nodes[v].get("title", v)))
+        else:
+            steps.append(u + " " + SPOKEN.get(rel, rel.lower()) + " " + v)
+    return steps
+
+
+def build_prompt(tg: TelemetryGraph, candidates: List[Candidate], include_task: bool = True) -> str:
     lines: List[str] = []
     lines.append("## Observed symptoms")
     for sym in tg.symptoms():
@@ -287,6 +324,8 @@ def build_prompt(tg: TelemetryGraph, candidates: List[Candidate]) -> str:
             lines.append("   evidence[" + ev.kind + " @ " + ev.source + "]: " + ev.text)
         lines.append("")
 
+    if not include_task:
+        return "\n".join(lines)
     lines.append("## Task")
     lines.append(
         "Identify the single most likely root cause. Then:\n"

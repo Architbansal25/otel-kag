@@ -6,7 +6,8 @@ spring:
     name: order-api
   artemis:
     mode: native
-    broker-url: tcp://localhost:61616
+    # Fail fast when the broker is gone instead of retrying inside every request.
+    broker-url: tcp://localhost:61616?initialConnectAttempts=1&reconnectAttempts=0&retryInterval=100
 
 demo:
   inventory-url: http://localhost:8082
@@ -16,3 +17,12 @@ management:
     web:
       exposure:
         include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    try-it-out-enabled: true
+    display-request-duration: true

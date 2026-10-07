@@ -3,3 +3,4 @@ networkx>=3.2
 PyYAML>=6.0
 pyvis>=0.3.2
 flask>=3.0  # the demo console (kag/ui.py)
+pydantic>=2.6  # the structured HealthReport answer format
