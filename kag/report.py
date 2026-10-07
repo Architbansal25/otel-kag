@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Status = Literal["HEALTHY", "DEGRADED", "DOWN"]
 
@@ -59,6 +59,19 @@ class Incident(BaseModel):
     evidence: List[str] = Field(description="The specific observations that support this")
     remediation: List[str] = Field(description="Immediate actions, most important first")
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def _known_category(cls, v):
+        # Smaller models paraphrase enums ("latency", "Service Down"); keep the
+        # answer instead of throwing it away over a label.
+        v = str(v or "").strip().lower().replace(" ", "_").replace("-", "_")
+        aliases = {"latency": "high_latency", "slow": "high_latency", "slowness": "high_latency",
+                   "down": "service_down", "outage": "service_down", "errors": "error_spike",
+                   "error": "error_spike", "deployment": "bad_deployment",
+                   "exhaustion": "resource_exhaustion"}
+        v = aliases.get(v, v)
+        return v if v in Category.__args__ else "unknown"
+
 
 class Diagnosis(BaseModel):
     """What the LLM must return."""
@@ -67,6 +80,16 @@ class Diagnosis(BaseModel):
     answer: str = Field(description="Direct 2-3 sentence answer to the question, plain language")
     incident: Optional[Incident] = Field(description="null when nothing is wrong")
     confidence: Literal["high", "medium", "low"]
+
+    @field_validator("overall_status", mode="before")
+    @classmethod
+    def _upper(cls, v):
+        return str(v or "").strip().upper()
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _lower(cls, v):
+        return str(v or "").strip().lower()
 
 
 class HealthReport(BaseModel):

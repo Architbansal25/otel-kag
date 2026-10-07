@@ -26,12 +26,13 @@ rem --- 1. LLM key -------------------------------------------------------------
 echo [1] Checking the LLM key
 if defined ANTHROPIC_API_KEY goto :keyok
 if defined LLM_API_KEY goto :keyok
+if defined GROQ_API_KEY goto :keyok
 if defined OPENAI_API_KEY goto :keyok
 echo     [WARN] No LLM key in this shell.
 echo            The demo still runs, but the REASON stage will say
 echo            'no LLM configured' instead of producing an answer.
 echo.
-echo            Fix:  setx ANTHROPIC_API_KEY "sk-ant-..."
+echo            Fix:  setx GROQ_API_KEY "gsk_..."   or   setx ANTHROPIC_API_KEY "sk-ant-..."
 echo            then close this window and open a NEW one.
 goto :keydone
 :keyok

@@ -11,7 +11,11 @@ Configure ONE of:
       (optional) setx KAG_MODEL  "claude-sonnet-5-5"
       (optional) setx KAG_EFFORT "low"     faster answers on stage
 
-  Anything OpenAI-compatible -- Groq, OpenAI, Azure, an internal gateway
+  Groq -- one variable is enough (base URL and model default sensibly)
+      setx GROQ_API_KEY "gsk_..."
+      (optional) setx KAG_MODEL "llama-3.3-70b-versatile"
+
+  Anything OpenAI-compatible -- OpenAI, Azure, an internal gateway
       setx LLM_BASE_URL "https://api.groq.com/openai/v1"
       setx LLM_API_KEY  "gsk_..."
       setx KAG_MODEL    "llama-3.3-70b-versatile"
@@ -30,6 +34,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 from typing import Any, Dict, Type, TypeVar
 
 import requests
@@ -58,19 +63,47 @@ class LLMError(RuntimeError):
     """The provider was reachable but the call failed."""
 
 
-def _keys() -> tuple:
-    return (bool(os.environ.get("ANTHROPIC_API_KEY")),
-            bool(os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")))
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+
+# The answer is a small JSON object (~1k tokens). OpenAI-compatible providers
+# get a tight cap because some (Groq's free tier) count the whole max_tokens
+# reservation against a per-minute token limit and reject large requests.
+OPENAI_STRUCTURED_MAX_TOKENS = 2000
+
+
+def _anthropic_key() -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    return "" if key.startswith("gsk_") else key   # a Groq key in the wrong variable
+
+
+def _openai_key() -> str:
+    for var in ("LLM_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
+        if os.environ.get(var, "").strip():
+            return os.environ[var].strip()
+    misplaced = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    return misplaced if misplaced.startswith("gsk_") else ""
+
+
+def _is_groq() -> bool:
+    base = os.environ.get("LLM_BASE_URL", "")
+    return "groq.com" in base or (not base and _openai_key().startswith("gsk_"))
+
+
+def _base_url() -> str:
+    return (os.environ.get("LLM_BASE_URL")
+            or (GROQ_BASE_URL if _is_groq() else "https://api.openai.com/v1")).rstrip("/")
 
 
 def provider() -> str:
     """Returns 'anthropic', 'openai' or 'none' based on what is configured.
 
-    KAG_PROVIDER=anthropic|openai forces the choice. Otherwise Anthropic wins
-    when its key is set -- unless KAG_MODEL names a non-Claude model AND an
-    OpenAI-compatible key is also set, which can only mean "use that one".
+    KAG_PROVIDER=anthropic|openai|groq forces the choice. Otherwise Anthropic
+    wins when it has a key -- unless KAG_MODEL names a non-Claude model and an
+    OpenAI-compatible key is also set, which can only mean "use that one". A
+    Groq key (gsk_...) is recognised in any of the key variables.
     """
-    has_anthropic, has_openai = _keys()
+    has_anthropic, has_openai = bool(_anthropic_key()), bool(_openai_key())
     forced = os.environ.get("KAG_PROVIDER", "").strip().lower()
     if forced == "anthropic" and has_anthropic:
         return "anthropic"
@@ -86,21 +119,32 @@ def provider() -> str:
     return "none"
 
 
+def provider_label() -> str:
+    """What to show people: 'groq' rather than the protocol name."""
+    which = provider()
+    return "groq" if which == "openai" and _is_groq() else which
+
+
 def model_name() -> str:
     requested = os.environ.get("KAG_MODEL", "").strip()
     if provider() == "anthropic":
         # A Groq/OpenAI model name sent to Anthropic is a guaranteed 404.
         return requested if requested.startswith("claude") else ANTHROPIC_DEFAULT_MODEL
-    return requested or OPENAI_DEFAULT_MODEL
+    if requested.startswith("claude"):
+        requested = ""   # and a Claude name sent to Groq/OpenAI is one too
+    return requested or (GROQ_DEFAULT_MODEL if _is_groq() else OPENAI_DEFAULT_MODEL)
 
 
 def config_warning() -> str:
-    """A one-line explanation when KAG_MODEL is being ignored, else ''."""
+    """A one-line explanation when configuration is being reinterpreted, else ''."""
     requested = os.environ.get("KAG_MODEL", "").strip()
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip().startswith("gsk_"):
+        return ("ANTHROPIC_API_KEY holds a Groq key (gsk_...), so it is used for Groq. "
+                "Tidy-up: put it in GROQ_API_KEY and delete ANTHROPIC_API_KEY.")
     if provider() == "anthropic" and requested and not requested.startswith("claude"):
         return (f"KAG_MODEL={requested} is not a Claude model, so it is ignored and "
-                f"{ANTHROPIC_DEFAULT_MODEL} is used. To use {requested}, also set "
-                "LLM_BASE_URL + LLM_API_KEY; to silence this, remove KAG_MODEL.")
+                f"{ANTHROPIC_DEFAULT_MODEL} is used. To use {requested}, set "
+                "GROQ_API_KEY (or LLM_BASE_URL + LLM_API_KEY); or remove KAG_MODEL.")
     return ""
 
 
@@ -128,7 +172,8 @@ def structured(prompt: str, schema: Type[T], system: str = "", max_tokens: int =
         except ValidationError as exc:
             raise LLMError(f"response did not match {schema.__name__}: {exc}") from exc
     if which == "openai":
-        return _openai_structured(prompt, schema, system, max_tokens)
+        return _openai_structured(prompt, schema, system,
+                                  min(max_tokens, OPENAI_STRUCTURED_MAX_TOKENS))
     raise NoLLMConfigured(
         "No LLM key found. Set ANTHROPIC_API_KEY, or LLM_BASE_URL + LLM_API_KEY."
     )
@@ -186,7 +231,7 @@ def _anthropic(prompt: str, system: str, max_tokens: int,
         body["output_config"] = output_config
 
     headers = {
-        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "x-api-key": _anthropic_key(),
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
@@ -207,19 +252,31 @@ def _anthropic(prompt: str, system: str, max_tokens: int,
     return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
 
 
+def _post_openai(url: str, key: str, body: dict) -> requests.Response:
+    """POST with one short wait on 429: Groq's free tier rate-limits by the minute,
+    and a few seconds' pause beats falling back to the rule-based answer on stage."""
+    for attempt in range(2):
+        resp = requests.post(url, headers={"Authorization": f"Bearer {key}",
+                                           "Content-Type": "application/json"},
+                             json=body, timeout=TIMEOUT)
+        if resp.status_code != 429 or attempt == 1:
+            return resp
+        try:
+            wait = float(resp.headers.get("retry-after", "3"))
+        except ValueError:
+            wait = 3.0
+        time.sleep(min(max(wait, 1.0), 8.0))
+    return resp
+
+
 def _openai_compatible(prompt: str, system: str, max_tokens: int) -> str:
-    base = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    key = os.environ.get("LLM_API_KEY") or os.environ["OPENAI_API_KEY"]
+    base, key = _base_url(), _openai_key()
 
     messages = ([{"role": "system", "content": system}] if system else []) + [
         {"role": "user", "content": prompt}
     ]
-    resp = requests.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={"model": model_name(), "max_tokens": max_tokens, "messages": messages},
-        timeout=TIMEOUT,
-    )
+    resp = _post_openai(f"{base}/chat/completions", key,
+                        {"model": model_name(), "max_tokens": max_tokens, "messages": messages})
     if resp.status_code != 200:
         raise LLMError(f"LLM returned {resp.status_code}: {resp.text[:400]}")
 
@@ -228,8 +285,7 @@ def _openai_compatible(prompt: str, system: str, max_tokens: int) -> str:
 
 def _openai_structured(prompt: str, schema: Type[T], system: str, max_tokens: int) -> T:
     """JSON mode + client-side validation, with one corrective retry."""
-    base = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    key = os.environ.get("LLM_API_KEY") or os.environ["OPENAI_API_KEY"]
+    base, key = _base_url(), _openai_key()
     instructions = (system + "\n\n" if system else "") + (
         "Respond with a single JSON object and nothing else. It must validate "
         "against this JSON schema:\n" + json.dumps(strict_schema(schema)))
@@ -238,13 +294,9 @@ def _openai_structured(prompt: str, schema: Type[T], system: str, max_tokens: in
 
     last_error = ""
     for _ in range(2):
-        resp = requests.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": model_name(), "max_tokens": max_tokens, "messages": messages,
-                  "response_format": {"type": "json_object"}},
-            timeout=TIMEOUT,
-        )
+        resp = _post_openai(f"{base}/chat/completions", key,
+                            {"model": model_name(), "max_tokens": max_tokens, "messages": messages,
+                             "response_format": {"type": "json_object"}})
         if resp.status_code != 200:
             raise LLMError(f"LLM returned {resp.status_code}: {resp.text[:400]}")
         text = resp.json()["choices"][0]["message"]["content"].strip()
