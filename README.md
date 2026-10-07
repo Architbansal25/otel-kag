@@ -69,32 +69,56 @@ cd kag && pip install -r requirements.txt && python3 ui.py   # console on :8090
 
 Without a key the assistant answers from rules, in the same `HealthReport`
 format, so the demo never breaks. With a key, the LLM reasons over the retrieved
-subgraph and fills the schema:
+subgraph and fills the schema. Pick **one**:
+
+**Groq** (one variable is enough; the model defaults to `openai/gpt-oss-120b`,
+Groq's successor to the retired `llama-3.3-70b-versatile`):
 
 ```
-setx ANTHROPIC_API_KEY "sk-ant-..."             # default model: claude-opus-5-5
+setx GROQ_API_KEY "gsk_..."
+```
+
+If the configured model has been retired or is not enabled for your key, the
+assistant asks Groq which models the key can use and switches to the best one,
+printing which it picked.
+
+**Anthropic** (default model `claude-opus-5-5`):
+
+```
+setx ANTHROPIC_API_KEY "sk-ant-..."
 setx KAG_EFFORT "low"                            # optional: faster answers on stage
 ```
 
-or any OpenAI-compatible endpoint (Groq, OpenAI, Azure):
+**Any other OpenAI-compatible endpoint** (OpenAI, Azure, a gateway):
 
 ```
-setx LLM_BASE_URL "https://api.groq.com/openai/v1"
-setx LLM_API_KEY  "gsk_..."
-setx KAG_MODEL    "llama-3.3-70b-versatile"
+setx LLM_BASE_URL "https://..."
+setx LLM_API_KEY  "..."
+setx KAG_MODEL    "model-name"
 ```
 
-Open a **new** terminal after `setx`.
+Open a **new** terminal after `setx`, then run the pre-flight check:
 
-Which one is used: Anthropic if `ANTHROPIC_API_KEY` is set, unless `KAG_MODEL`
-names a non-Claude model *and* an OpenAI-compatible key is also set. A non-Claude
-`KAG_MODEL` with only an Anthropic key is ignored (with a warning) rather than
-sent to Anthropic. `KAG_PROVIDER=anthropic` or `KAG_PROVIDER=openai` forces the
-choice. The console header shows the provider and model in use.
+```
+cd kag
+py llm.py          # provider, model, the models your key can use, and a test call
+```
 
-On Anthropic the answer is constrained by
-structured outputs. On OpenAI-compatible providers it uses JSON mode, is
-validated with Pydantic, and gets one corrective retry.
+The console window prints the provider and model it picked
+(`LLM: groq / openai/gpt-oss-120b`), and so does the header badge. If the LLM ever
+contradicts the measured health (says healthy while a service is down), its answer
+is discarded and the rule-based one is shown, with the reason.
+
+How the choice is made: a Groq key (`gsk_...`) is recognised in any key variable,
+even `ANTHROPIC_API_KEY`. Anthropic wins when it has a real key, unless `KAG_MODEL`
+names a non-Claude model and an OpenAI-compatible key is also set.
+`KAG_PROVIDER=groq|openai|anthropic` forces it. `KAG_MODEL` only overrides the model
+within the chosen provider; a Claude name is never sent to Groq, and a Groq name is
+never sent to Anthropic.
+
+On Anthropic the answer is constrained by structured outputs. On Groq and other
+OpenAI-compatible providers it uses JSON mode, is validated with Pydantic, gets one
+corrective retry, and waits briefly and retries once on a rate limit (HTTP 429).
 
 ### From the terminal
 
@@ -181,7 +205,9 @@ class Incident(BaseModel):
 | The answer says healthy right after a fault | Traffic must be flowing: click *Start steady traffic* and wait ~20s |
 | An old incident shows up in a new answer | The trace window is 5 minutes. Faults are separated by the monitor's last recovery, but waiting a few minutes between runs gives the cleanest story |
 | `generated_by: rules (LLM call failed)` | The LLM error is shown under the answer; check the key / model name |
-| `Anthropic returned 404 ... model: llama-...` | Old versions sent a Groq `KAG_MODEL` to Anthropic. Update, or remove it: `reg delete HKCU\Environment /v KAG_MODEL /f` |
+| `Anthropic returned 404 ... model: llama-...` | Old versions sent the Groq setup to Anthropic. Update, and keep the Groq key in `GROQ_API_KEY` |
+| `The model llama-3.3-70b-versatile does not exist or you do not have access to it` | Groq retired it in August 2026. Update (the assistant now switches models by itself), or `reg delete HKCU\Environment /v KAG_MODEL /f` to use the default |
+| `LLM returned 413` / `429` from Groq | Free-tier token limits: wait a minute, or set `KAG_MODEL` to a smaller model such as `openai/gpt-oss-20b` |
 | Every answer reads the same | That is the rule-based fallback (no working LLM). Fix the LLM and answers follow the question |
 | Swagger shows a 500 | The response body now carries the reason; the `x-trace-id` header opens the trace at `http://localhost:16686/trace/<id>`. "Stock lookup failed: storage read error" means *Inject errors* is on: *Clear* it |
 | Asked right after breaking something, answer still healthy | Spans reach Jaeger within ~1s, but give traffic 10-20s to show a pattern |

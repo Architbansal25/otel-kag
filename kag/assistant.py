@@ -540,10 +540,18 @@ def ask(question: str, window: str = DEFAULT_WINDOW, use_llm: bool = True,
     llm_error = None
     generated_by = "rules (no LLM configured)"
     if use_llm and llm.provider() != "none":
-        stage("reason", "running", f"asking {llm.model_name()}")
+        stage("reason", "running", f"asking {llm.provider_label()} / {llm.model_name()}")
         try:
-            diagnosis = llm.structured(prompt, Diagnosis, system=SYSTEM_PROMPT)
-            generated_by = f"{llm.provider()}:{llm.model_name()}"
+            candidate = llm.structured(prompt, Diagnosis, system=SYSTEM_PROMPT)
+            measured = overall(services)
+            if (measured == "HEALTHY") != (candidate.overall_status == "HEALTHY"):
+                # Health is measured, not generated: an answer that says "fine"
+                # while a service is down (or the reverse) is not shown.
+                raise llm.LLMError(f"the model said {candidate.overall_status} but the "
+                                   f"measurements say {measured}; answered by rules instead")
+            candidate.overall_status = measured   # DEGRADED vs DOWN: trust the probes
+            diagnosis = candidate
+            generated_by = f"{llm.provider_label()}:{llm.model_name()}"
             stage("reason", "done", "structured answer received")
         except (llm.NoLLMConfigured, llm.LLMError, KeyError, ValueError) as exc:
             llm_error = str(exc)
