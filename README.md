@@ -84,7 +84,15 @@ setx LLM_API_KEY  "gsk_..."
 setx KAG_MODEL    "llama-3.3-70b-versatile"
 ```
 
-Open a **new** terminal after `setx`. On Anthropic the answer is constrained by
+Open a **new** terminal after `setx`.
+
+Which one is used: Anthropic if `ANTHROPIC_API_KEY` is set, unless `KAG_MODEL`
+names a non-Claude model *and* an OpenAI-compatible key is also set. A non-Claude
+`KAG_MODEL` with only an Anthropic key is ignored (with a warning) rather than
+sent to Anthropic. `KAG_PROVIDER=anthropic` or `KAG_PROVIDER=openai` forces the
+choice. The console header shows the provider and model in use.
+
+On Anthropic the answer is constrained by
 structured outputs. On OpenAI-compatible providers it uses JSON mode, is
 validated with Pydantic, and gets one corrective retry.
 
@@ -173,4 +181,8 @@ class Incident(BaseModel):
 | The answer says healthy right after a fault | Traffic must be flowing: click *Start steady traffic* and wait ~20s |
 | An old incident shows up in a new answer | The trace window is 5 minutes. Faults are separated by the monitor's last recovery, but waiting a few minutes between runs gives the cleanest story |
 | `generated_by: rules (LLM call failed)` | The LLM error is shown under the answer; check the key / model name |
+| `Anthropic returned 404 ... model: llama-...` | Old versions sent a Groq `KAG_MODEL` to Anthropic. Update, or remove it: `reg delete HKCU\Environment /v KAG_MODEL /f` |
+| Every answer reads the same | That is the rule-based fallback (no working LLM). Fix the LLM and answers follow the question |
+| Swagger shows a 500 | The response body now carries the reason; the `x-trace-id` header opens the trace at `http://localhost:16686/trace/<id>`. "Stock lookup failed: storage read error" means *Inject errors* is on: *Clear* it |
+| Asked right after breaking something, answer still healthy | Spans reach Jaeger within ~1s, but give traffic 10-20s to show a pattern |
 | No traces in Jaeger | `./ops/demo.sh status`; Jaeger must be up before the services start |

@@ -371,7 +371,8 @@ def api_overview():
         "chaos": chaos,
         "traffic": traffic_view,
         "events": monitor.recent_events(12),
-        "llm": {"provider": llm.provider(), "model": llm.model_name()},
+        "llm": {"provider": llm.provider(), "model": llm.model_name(),
+                "warning": llm.config_warning()},
         "control": control,
     })
 
@@ -578,5 +579,8 @@ def graph_page():
 
 if __name__ == "__main__":
     health_monitor.start()
+    print("\n  LLM: " + llm.provider() + " / " + llm.model_name())
+    if llm.config_warning():
+        print("  WARNING: " + llm.config_warning())
     print("\n  Demo console -> http://localhost:8090\n")
     app.run(host="127.0.0.1", port=8090, threaded=True, debug=False)

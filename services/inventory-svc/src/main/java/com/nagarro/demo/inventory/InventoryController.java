@@ -2,6 +2,8 @@ package com.nagarro.demo.inventory;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
 import io.swagger.v3.oas.annotations.Hidden;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -79,6 +81,20 @@ public class InventoryController {
         log.warn("Reservation rejected: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("error", "out_of_stock", "message", e.getMessage()));
+    }
+
+    /**
+     * Anything unexpected. Spring's default 500 body says only "Internal Server
+     * Error"; this one says why, and puts the reason on the trace so the RCA
+     * engine can cite it.
+     */
+    @ExceptionHandler(RuntimeException.class)
+    public ResponseEntity<Map<String, Object>> failure(RuntimeException e) {
+        log.error("Request failed: {}", e.getMessage(), e);
+        Span.current().recordException(e);
+        Span.current().setStatus(StatusCode.ERROR, String.valueOf(e.getMessage()));
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", "internal_error", "message", String.valueOf(e.getMessage())));
     }
 
     @ExceptionHandler(org.springframework.dao.EmptyResultDataAccessException.class)

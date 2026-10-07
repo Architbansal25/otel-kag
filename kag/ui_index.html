@@ -312,7 +312,9 @@ async function overview() {
   });
   $('jaegerBadge').href = d.jaeger.url;
   $('jaegerBadge').innerHTML = 'Jaeger <b>' + (d.jaeger.up ? 'up' : 'down') + '</b>';
-  $('llmBadge').textContent = d.llm.provider === 'none' ? 'none (rule-based)' : d.llm.model;
+  $('llmBadge').textContent = d.llm.provider === 'none' ? 'none (rule-based)'
+      : d.llm.provider + ' · ' + d.llm.model + (d.llm.warning ? ' ⚠' : '');
+  $('llmBadge').parentElement.title = d.llm.warning || '';
 
   const t = d.traffic;
   $('trafficBtn').textContent = t.on ? 'Stop traffic' : 'Start steady traffic';
