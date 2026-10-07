@@ -1,11 +1,14 @@
 """Demo console: a local web UI for the OTel + KAG root cause demo.
 
 Runs on Windows (Python can bind sockets here even though the JVM cannot) and
-talks to the services running inside WSL over forwarded localhost ports. It is
-the single control surface for the session -- inject scenarios, drive load, and
-run the analysis without ever showing a terminal.
+talks to the services running inside WSL over forwarded localhost ports. Also
+runs as-is on Linux / macOS. It is the single control surface for the session.
 
     py ui.py            then open http://localhost:8090
+
+    /           the story: the live app, try it, ask "is anything breaking?",
+                and (folded away) the presenter's fault-injection controls
+    /classic    the original flat-RAG vs KAG side-by-side race
 
 Two deliberate design choices:
 
@@ -19,6 +22,9 @@ Two deliberate design choices:
 
 from __future__ import annotations
 
+import os
+import random
+import re
 import subprocess
 import threading
 import time
@@ -28,14 +34,38 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, request, send_file
 
+import assistant
 import graph as graph_mod
 import kag_engine
 import llm
+import monitor
 import rag_baseline
 
 HERE = Path(__file__).resolve().parent
-DEMO_SH = "/mnt/c/Project/flo/flo2026 demo/otel-kag/ops/demo.sh"
-WSL_DISTRO = "Ubuntu-22.04"
+ON_WINDOWS = os.name == "nt"
+WSL_DISTRO = os.environ.get("WSL_DISTRO", "Ubuntu-22.04")
+
+
+def _default_demo_sh() -> str:
+    script = HERE.parent / "ops" / "demo.sh"
+    if not ON_WINDOWS:
+        return str(script)
+    # C:\Project\x\ops\demo.sh -> /mnt/c/Project/x/ops/demo.sh
+    drive, rest = os.path.splitdrive(str(script))
+    return "/mnt/" + drive.rstrip(":").lower() + rest.replace("\\", "/")
+
+
+DEMO_SH = os.environ.get("DEMO_SH") or _default_demo_sh()
+HOST = graph_mod.SERVICE_HOST
+JAEGER_UI = os.environ.get("JAEGER_UI", "http://localhost:16686")
+
+SERVICES = [
+    # name, port, one-line role shown on the card
+    ("order-api", 8081, "Customer-facing API: place and look up orders"),
+    ("inventory-svc", 8082, "Stock levels and reservations (H2 database)"),
+    ("notification-svc", 8083, "Consumes order events, notifies customers"),
+    ("broker", 8084, "JMS broker hosting the order.events queue"),
+]
 
 app = Flask(__name__)
 
@@ -158,12 +188,20 @@ ACTIONS = {
 }
 
 
+def _demo_sh(*args):
+    cmd = (["wsl", "-d", WSL_DISTRO, "--", "bash", DEMO_SH, *args] if ON_WINDOWS
+           else ["bash", DEMO_SH, *args])
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    # demo.sh colours its output for terminals; the browser wants plain text.
+    proc.stdout = re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout or "")
+    proc.stderr = re.sub(r"\x1b\[[0-9;]*m", "", proc.stderr or "")
+    return proc
+
+
 def _run_control(action):
     args, _ = ACTIONS[action]
     try:
-        proc = subprocess.run(
-            ["wsl", "-d", WSL_DISTRO, "--", "bash", DEMO_SH, *args],
-            capture_output=True, text=True, timeout=600)
+        proc = _demo_sh(*args)
         out = (proc.stdout or "") + (proc.stderr or "")
     except Exception as exc:                      # noqa: BLE001 - surfaced in the UI
         out = f"failed: {exc}"
@@ -298,10 +336,235 @@ def api_analysis():
         return jsonify({**analysis, "elapsed": elapsed})
 
 
+# --- the story console ------------------------------------------------------
+health_monitor = monitor.HealthMonitor()
+
+
+def _svc_url(port, path):
+    return f"http://{HOST}:{port}{path}"
+
+
+@app.get("/api/overview")
+def api_overview():
+    state = health_monitor.snapshot()
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        missing = {n: pool.submit(monitor.check, p) for n, p in
+                   ((n, p) for n, p, _ in SERVICES) if n not in state}
+        jaeger_f = pool.submit(_probe, JAEGER_UI + "/api/services")
+        chaos_f = pool.submit(_probe, _svc_url(8082, "/admin/chaos"))
+        live = {n: f.result()[0] for n, f in missing.items()}
+        jaeger_up = jaeger_f.result() is not None
+        chaos = chaos_f.result() or {}
+
+    services = [{
+        "name": n, "port": p, "role": role,
+        "state": state.get(n) or live.get(n, "UNKNOWN"),
+        "swagger": _svc_url(p, "/swagger-ui.html"),
+        "health": _svc_url(p, "/actuator/health"),
+        "traces": f"{JAEGER_UI}/search?service={n}&lookback=15m&limit=20",
+    } for n, p, role in SERVICES]
+    with _lock:
+        traffic_view = dict(traffic, recent=list(traffic["recent"]))
+    return jsonify({
+        "services": services,
+        "jaeger": {"up": jaeger_up, "url": JAEGER_UI},
+        "chaos": chaos,
+        "traffic": traffic_view,
+        "events": monitor.recent_events(12),
+        "llm": {"provider": llm.provider(), "model": llm.model_name()},
+        "control": control,
+    })
+
+
+# --- "try it": proxied so the browser needs no CORS ----------------------
+TRY = {
+    "place_order":  ("POST", 8081, "/orders"),
+    "availability": ("GET", 8081, "/products/{sku}/availability"),
+    "recent":       ("GET", 8081, "/orders"),
+    "inventory":    ("GET", 8082, "/inventory"),
+}
+
+
+def _call(method, port, path, body=None, timeout=10):
+    started = time.time()
+    try:
+        r = requests.request(method, _svc_url(port, path), json=body, timeout=timeout)
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = r.text[:500]
+        return {"status": r.status_code, "ms": round((time.time() - started) * 1000),
+                "body": payload, "traceId": r.headers.get("X-Trace-Id")}
+    except requests.RequestException as exc:
+        return {"status": 0, "ms": round((time.time() - started) * 1000),
+                "body": {"error": "connection failed",
+                         "detail": "refused" if "refused" in str(exc).lower() else "timed out"},
+                "traceId": None}
+
+
+@app.post("/api/try")
+def api_try():
+    req = request.json or {}
+    action = req.get("action", "")
+    if action not in TRY:
+        return jsonify({"error": "unknown action"}), 400
+    method, port, path = TRY[action]
+    sku = req.get("sku") or "SKU-1001"
+    out = _call(method, port, path.format(sku=sku),
+                body={"sku": sku} if method == "POST" else None)
+    out["request"] = f"{method} {_svc_url(port, path.format(sku=sku))}"
+    if out.get("traceId"):
+        out["jaeger"] = f"{JAEGER_UI}/trace/{out['traceId']}"
+    return jsonify(out)
+
+
+# --- background traffic, so there is always something to observe ---------
+traffic = {"on": False, "workers": 0, "sent": 0, "ok": 0, "failed": 0,
+           "since": None, "recent": []}
+_traffic_stop = threading.Event()
+
+
+def _traffic_worker():
+    skus = ["SKU-1001", "SKU-1002", "SKU-1003"]
+    while not _traffic_stop.is_set():
+        if random.random() < 0.8:
+            res = _call("POST", 8081, "/orders", body={"sku": random.choice(skus)}, timeout=10)
+        else:
+            res = _call("GET", 8081, f"/products/{random.choice(skus)}/availability", timeout=10)
+        ok = 200 <= res["status"] < 300
+        with _lock:
+            traffic["sent"] += 1
+            traffic["ok" if ok else "failed"] += 1
+            traffic["recent"] = (traffic["recent"] + [1 if ok else 0])[-60:]
+        _traffic_stop.wait(0.35)
+
+
+@app.post("/api/traffic")
+def api_traffic():
+    on = bool((request.json or {}).get("on"))
+    with _lock:
+        if on and not traffic["on"]:
+            _traffic_stop.clear()
+            traffic.update(on=True, workers=4, sent=0, ok=0, failed=0,
+                           since=time.time(), recent=[])
+            for _ in range(4):
+                threading.Thread(target=_traffic_worker, daemon=True).start()
+        elif not on and traffic["on"]:
+            _traffic_stop.set()
+            traffic.update(on=False, workers=0)
+    return jsonify({"ok": True, "on": on})
+
+
+# --- presenter fault injection --------------------------------------------
+@app.post("/api/chaos")
+def api_chaos():
+    req = request.json or {}
+    action = req.get("action", "")
+    if action == "latency":
+        ms = int(req.get("ms") or 2500)
+        out = _call("POST", 8082, f"/admin/chaos/latency?ms={ms}", timeout=5)
+        return jsonify({"ok": out["status"] == 200, "message": f"inventory-svc fetches +{ms} ms", **out})
+    if action == "errors":
+        rate = float(req.get("rate") or 0.5)
+        out = _call("POST", 8082, f"/admin/chaos/errors?rate={rate}", timeout=5)
+        return jsonify({"ok": out["status"] == 200,
+                        "message": f"inventory-svc fails {rate:.0%} of fetches", **out})
+    if action == "clear":
+        out = _call("DELETE", 8082, "/admin/chaos", timeout=5)
+        return jsonify({"ok": out["status"] == 200, "message": "latency/errors cleared", **out})
+
+    svc = req.get("service", "")
+    if action in ("kill", "restart") and svc not in {n for n, _, _ in SERVICES}:
+        return jsonify({"error": "unknown service"}), 400
+    args = {"kill": ["kill", svc], "restart": ["restart", svc], "heal": ["heal"]}.get(action)
+    if not args:
+        return jsonify({"error": "unknown action"}), 400
+    label = {"kill": f"Stopping {svc}", "restart": f"Restarting {svc}",
+             "heal": "Healing everything"}[action]
+    with _lock:
+        if control["running"]:
+            return jsonify({"error": "another action is already running"}), 409
+        control.update(running=True, action=action, done=False, log=label + "...")
+
+    def run():
+        try:
+            proc = _demo_sh(*args)
+            out = (proc.stdout or "") + (proc.stderr or "")
+        except Exception as exc:                  # noqa: BLE001 - surfaced in the UI
+            out = f"failed: {exc}"
+        with _lock:
+            control.update(running=False, done=True, log=out.strip()[-4000:])
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True, "message": label})
+
+
+# --- ask ---------------------------------------------------------------------
+asking = {"running": False, "question": "", "started_at": None, "stages": [],
+          "report": None, "prompt": "", "candidates": [], "error": None, "elapsed": 0}
+
+
+def _ask_stages():
+    return [{"id": i, "label": l, "hint": h, "status": "pending", "detail": ""} for i, l, h in (
+        ("observe", "OBSERVE", "health checks, traces, pool, queue"),
+        ("seed", "SEED", "turn what hurts into symptoms"),
+        ("rank", "RANK", "walk the knowledge graph back to a cause"),
+        ("reason", "REASON", "LLM fills the structured answer"))]
+
+
+def _on_ask_stage(stage_id, status, detail=""):
+    with _lock:
+        for st in asking["stages"]:
+            if st["id"] == stage_id:
+                st.update(status=status, detail=detail or st["detail"])
+
+
+def _run_ask(question):
+    try:
+        res = assistant.ask(question, on_stage=_on_ask_stage)
+        with _lock:
+            asking.update(report=res.report.model_dump(), prompt=res.prompt,
+                          candidates=res.candidates, error=res.llm_error,
+                          elapsed=res.elapsed_s)
+    except Exception as exc:                      # noqa: BLE001
+        with _lock:
+            asking["error"] = f"ask failed: {exc}"
+    finally:
+        with _lock:
+            asking["running"] = False
+
+
+@app.post("/api/ask")
+def api_ask():
+    question = (request.json or {}).get("question", "").strip()
+    with _lock:
+        if asking["running"]:
+            return jsonify({"error": "already answering"}), 409
+        asking.update(running=True, question=question, started_at=time.time(),
+                      stages=_ask_stages(), report=None, prompt="", candidates=[],
+                      error=None, elapsed=0)
+    threading.Thread(target=_run_ask, args=(question,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/ask")
+def api_ask_state():
+    with _lock:
+        out = dict(asking)
+        if out["running"] and out["started_at"]:
+            out["elapsed"] = round(time.time() - out["started_at"], 1)
+        return jsonify(out)
+
+
 # --- pages -----------------------------------------------------------------
 @app.get("/")
 def index():
     return send_file(HERE / "ui_index.html")
+
+
+@app.get("/classic")
+def classic():
+    return send_file(HERE / "ui_classic.html")
 
 
 @app.get("/graph.html")
@@ -314,5 +577,6 @@ def graph_page():
 
 
 if __name__ == "__main__":
+    health_monitor.start()
     print("\n  Demo console -> http://localhost:8090\n")
     app.run(host="127.0.0.1", port=8090, threaded=True, debug=False)

@@ -2,321 +2,442 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>RCA Console — OpenTelemetry + KAG</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Platform — Live</title>
 <style>
   :root {
     --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2b313d;
     --text:#e8ecf3; --dim:#8b95a7; --blue:#5b9bff; --red:#ff5a4d;
-    --green:#3ddc84; --amber:#ffd60a; --violet:#b98bff;
+    --green:#3ddc84; --amber:#ffc53d; --violet:#b98bff;
     --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
        font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
-  .wrap{max-width:1640px;margin:0 auto;padding:18px 22px 60px}
-  h1{font-size:20px;margin:0;letter-spacing:.2px}
-  h1 span{color:var(--dim);font-weight:400}
-  header{display:flex;align-items:center;justify-content:space-between;
-         gap:16px;flex-wrap:wrap;margin-bottom:16px}
+  a{color:var(--blue)}
+  .wrap{max-width:1500px;margin:0 auto;padding:18px 22px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+         flex-wrap:wrap;margin-bottom:18px}
+  h1{font-size:22px;margin:0} h1 span{color:var(--dim);font-weight:400}
+  .badges{display:flex;gap:8px;flex-wrap:wrap}
   .badge{font:13px var(--mono);background:var(--panel2);border:1px solid var(--line);
-         padding:5px 11px;border-radius:999px;color:var(--dim)}
+         padding:5px 11px;border-radius:999px;color:var(--dim);text-decoration:none}
   .badge b{color:var(--violet);font-weight:600}
 
-  .card{background:var(--panel);border:1px solid var(--line);
-        border-radius:12px;padding:14px 16px}
-  .strip{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-bottom:12px}
-  @media(max-width:1100px){.strip{grid-template-columns:1fr}}
-  .lbl{font-size:11px;letter-spacing:.9px;text-transform:uppercase;
-       color:var(--dim);margin-bottom:9px}
+  section{margin-bottom:22px}
+  .step{display:flex;align-items:baseline;gap:12px;margin:0 0 10px}
+  .step .n{font:600 13px var(--mono);color:var(--bg);background:var(--blue);
+           border-radius:999px;width:24px;height:24px;display:grid;place-items:center;flex:none}
+  .step h2{margin:0;font-size:18px}
+  .step p{margin:0;color:var(--dim);font-size:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .lbl{font-size:11px;letter-spacing:.9px;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
 
-  .pills{display:flex;gap:8px;flex-wrap:wrap}
-  .pill{display:flex;align-items:center;gap:7px;background:var(--panel2);
-        border:1px solid var(--line);border-radius:999px;padding:5px 12px;
-        font:13px var(--mono)}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
-  .dot.up{background:var(--green);box-shadow:0 0 8px rgba(61,220,132,.7)}
-  .dot.down{background:var(--red);box-shadow:0 0 8px rgba(255,90,77,.7)}
+  /* services */
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  @media(max-width:1100px){.grid4{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:640px){.grid4{grid-template-columns:1fr}}
+  .svc{transition:border-color .2s, box-shadow .2s}
+  .svc.UP{border-color:#24533a}
+  .svc.DOWN{border-color:var(--red);box-shadow:0 0 0 1px var(--red), 0 0 22px rgba(255,90,77,.25)}
+  .svc.DEGRADED{border-color:var(--amber)}
+  .svc .top{display:flex;align-items:center;gap:9px}
+  .svc .name{font:600 16px var(--mono)}
+  .svc .state{margin-left:auto;font:600 12px var(--mono);letter-spacing:.6px}
+  .svc .role{color:var(--dim);font-size:13px;margin:6px 0 12px;min-height:38px}
+  .links{display:flex;gap:7px;flex-wrap:wrap}
+  .links a{font-size:13px;text-decoration:none;border:1px solid var(--line);
+           border-radius:8px;padding:5px 10px;background:var(--panel2);color:var(--text)}
+  .links a:hover{border-color:var(--blue)}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--dim);flex:none}
+  .dot.UP{background:var(--green);box-shadow:0 0 8px rgba(61,220,132,.7)}
+  .dot.DOWN{background:var(--red);box-shadow:0 0 8px rgba(255,90,77,.8);animation:pulse 1s infinite}
+  .dot.DEGRADED{background:var(--amber)}
+  @keyframes pulse{50%{opacity:.35}}
+  .c-UP{color:var(--green)} .c-DOWN{color:var(--red)} .c-DEGRADED{color:var(--amber)}
+  .c-HEALTHY{color:var(--green)}
 
-  .metric{font:26px/1.2 var(--mono);font-weight:600}
-  .metric.bad{color:var(--red)} .metric.ok{color:var(--green)}
-  .sub{font-size:12.5px;color:var(--dim);margin-top:3px}
+  /* architecture */
+  .arch{margin-top:12px}
+  .arch svg{width:100%;height:auto;display:block}
+  .arch text{font:13px ui-monospace,Consolas,monospace;fill:var(--text)}
+  .arch .edge{stroke:#4a5263;stroke-width:1.6;fill:none}
+  .arch .node rect{fill:var(--panel2);stroke:var(--line);stroke-width:1.5;transition:.2s}
+  .arch .node.UP rect{stroke:var(--green)}
+  .arch .node.DOWN rect{stroke:var(--red);fill:#2a1517}
+  .arch .node.DEGRADED rect{stroke:var(--amber)}
+  .arch .sub{fill:var(--dim);font-size:11px}
 
-  .controls{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-  button{font:14px/1 system-ui,sans-serif;font-weight:550;cursor:pointer;
-         border-radius:9px;padding:11px 15px;border:1px solid var(--line);
-         background:var(--panel2);color:var(--text);transition:.14s}
+  /* try it */
+  .two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:12px}
+  @media(max-width:1000px){.two{grid-template-columns:1fr}}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{font:14px/1 system-ui,sans-serif;font-weight:550;cursor:pointer;border-radius:9px;
+         padding:10px 14px;border:1px solid var(--line);background:var(--panel2);
+         color:var(--text);transition:.14s}
   button:hover:not(:disabled){border-color:var(--blue);transform:translateY(-1px)}
-  button:disabled{opacity:.42;cursor:not-allowed}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.go{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:700}
   button.danger{border-color:#5d2b2b;color:#ffb1a8}
   button.danger:hover:not(:disabled){border-color:var(--red)}
-  button.go{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:700}
-  button.go:hover:not(:disabled){background:#7fb2ff}
+  button.ok{border-color:#24533a;color:#a6f0c6}
+  select,input[type=number]{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+         border-radius:8px;padding:8px 10px;font:14px system-ui,sans-serif}
+  input[type=number]{width:96px}
+  pre{margin:0;font:12.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word;
+      background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+      max-height:300px;overflow:auto}
+  .resp-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;
+             font:13px var(--mono);color:var(--dim)}
+  .code{font:700 13px var(--mono);padding:3px 9px;border-radius:6px}
+  .code.ok{background:rgba(61,220,132,.15);color:var(--green)}
+  .code.bad{background:rgba(255,90,77,.15);color:var(--red)}
+  .traffic{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:12px;
+           padding-top:12px;border-top:1px solid var(--line)}
+  .stat{font:600 20px var(--mono)} .stat small{display:block;font:11px system-ui;color:var(--dim);
+        letter-spacing:.6px;text-transform:uppercase}
+  .spark{display:flex;gap:2px;align-items:flex-end;height:22px}
+  .spark i{display:block;width:5px;height:100%;border-radius:2px;background:var(--green)}
+  .spark i.f{background:var(--red)}
 
-  .qrow{display:flex;gap:9px;margin-bottom:14px}
-  input[type=text]{flex:1;background:var(--panel);border:1px solid var(--line);
-      border-radius:9px;padding:12px 14px;color:var(--text);font:15px system-ui,sans-serif}
-  input[type=text]:focus{outline:none;border-color:var(--blue)}
+  /* ask */
+  .qrow{display:flex;gap:9px;margin-bottom:10px}
+  .qrow input{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+              padding:14px 16px;color:var(--text);font:17px system-ui,sans-serif}
+  .qrow input:focus{outline:none;border-color:var(--blue)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .chip{font-size:13px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);
+        background:transparent;color:var(--dim);cursor:pointer}
+  .chip:hover{color:var(--text);border-color:var(--blue)}
+  .stages{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+  @media(max-width:900px){.stages{grid-template-columns:1fr 1fr}}
+  .stg{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+  .stg b{font:600 12px var(--mono);letter-spacing:.8px}
+  .stg div{font-size:12.5px;color:var(--dim);margin-top:3px;min-height:18px}
+  .stg.running{border-color:var(--blue)} .stg.running b{color:var(--blue)}
+  .stg.done b{color:var(--green)} .stg.error b{color:var(--red)} .stg.skipped{opacity:.5}
 
-  .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  @media(max-width:1100px){.cols{grid-template-columns:1fr}}
-  .col{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-       overflow:hidden;display:flex;flex-direction:column}
-  .col > h2{margin:0;padding:12px 16px;font-size:14.5px;border-bottom:1px solid var(--line);
-            display:flex;align-items:center;gap:9px}
-  .col.rag > h2{background:rgba(255,90,77,.09)}
-  .col.kag > h2{background:rgba(91,155,255,.10)}
-  .col h2 small{color:var(--dim);font-weight:400;font-size:12.5px}
-  .body{padding:14px 16px;flex:1}
+  .verdict{border-radius:12px;padding:18px 20px;border:1px solid var(--line);margin-bottom:12px}
+  .verdict.HEALTHY{background:rgba(61,220,132,.08);border-color:#24533a}
+  .verdict.DEGRADED{background:rgba(255,197,61,.08);border-color:#6b5520}
+  .verdict.DOWN{background:rgba(255,90,77,.09);border-color:#6b2b27}
+  .verdict .big{font:800 30px/1.1 var(--mono);letter-spacing:1px}
+  .verdict .answer{font-size:19px;margin-top:8px;line-height:1.5}
+  .verdict .meta{font:12.5px var(--mono);color:var(--dim);margin-top:10px}
+  .facts{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+  @media(max-width:900px){.facts{grid-template-columns:1fr 1fr}}
+  .fact .v{font:600 15px var(--mono);margin-top:2px;word-break:break-word}
+  .lists{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px}
+  @media(max-width:1000px){.lists{grid-template-columns:1fr}}
+  .lists ol,.lists ul{margin:0;padding-left:20px;font-size:14px}
+  .lists li{margin-bottom:6px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;font:11px system-ui;letter-spacing:.8px;text-transform:uppercase;
+     color:var(--dim);padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:7px 8px;border-bottom:1px solid rgba(43,49,61,.6)}
+  td.mono{font-family:var(--mono)}
+  details{margin-top:10px}
+  summary{cursor:pointer;color:var(--dim);font-size:14px;padding:6px 0}
+  summary:hover{color:var(--text)}
+  .empty{color:var(--dim);font-size:15px;padding:18px;text-align:center}
 
-  /* stage tracker — the piece the room actually watches */
-  .stage{display:flex;gap:11px;align-items:flex-start;padding:9px 0;
-         border-bottom:1px solid rgba(43,49,61,.6)}
-  .stage:last-child{border-bottom:none}
-  .stg-ico{width:19px;height:19px;border-radius:50%;flex:none;margin-top:2px;
-           border:2px solid var(--line);display:grid;place-items:center;
-           font-size:11px;font-weight:700}
-  .stage.running .stg-ico{border-color:var(--blue);border-top-color:transparent;
-           animation:spin .8s linear infinite}
-  .stage.done .stg-ico{border-color:var(--green);background:var(--green);color:#04120a}
-  .stage.empty .stg-ico,.stage.skipped .stg-ico{border-color:var(--dim);color:var(--dim)}
-  .stage.error .stg-ico{border-color:var(--red);background:var(--red);color:#1a0603}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .stg-name{font:13px var(--mono);font-weight:700;letter-spacing:.7px}
-  .stage.pending .stg-name{color:var(--dim)}
-  .stg-hint{font-size:12.5px;color:var(--dim)}
-  .stg-detail{font:12.5px var(--mono);color:var(--green);margin-top:2px}
-  .stage.running .stg-detail{color:var(--blue)}
-
-  table{width:100%;border-collapse:collapse;font:12.5px var(--mono);margin-top:4px}
-  th{text-align:left;color:var(--dim);font-weight:500;padding:5px 7px;
-     border-bottom:1px solid var(--line);font-size:11px;letter-spacing:.5px}
-  td{padding:6px 7px;border-bottom:1px solid rgba(43,49,61,.5)}
-  tr.win td{background:rgba(61,220,132,.09)}
-  tr.win td:first-child{box-shadow:inset 3px 0 0 var(--green)}
-  .nid{color:var(--text)} tr.win .nid{color:var(--green);font-weight:700}
-  .sc{text-align:right;color:var(--dim)} .sc.total{color:var(--text);font-weight:700}
-
-  pre{background:#0b0d12;border:1px solid var(--line);border-radius:9px;
-      padding:12px;overflow:auto;max-height:340px;
-      font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;margin:0}
-  pre.flat{color:#ffb1a8;max-height:250px}
-  .answer{background:#0b0d12;border:1px solid var(--line);border-left:3px solid var(--green);
-          border-radius:9px;padding:13px 15px;white-space:pre-wrap;font-size:14.5px;
-          max-height:460px;overflow:auto}
-  .col.rag .answer{border-left-color:var(--red)}
-  .note{color:var(--dim);font-size:13px;font-style:italic}
-  .paths{margin-top:9px}
-  .path{font:11.5px var(--mono);color:var(--dim);background:#0b0d12;padding:7px 9px;
-        border-radius:7px;margin-top:5px;border-left:2px solid var(--green);
-        white-space:pre-wrap;word-break:break-word}
-  details{margin-top:11px} summary{cursor:pointer;color:var(--dim);font-size:13px}
-  summary:hover{color:var(--blue)}
-  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
-         background:var(--panel2);border:1px solid var(--blue);border-radius:9px;
-         padding:10px 17px;font-size:14px;opacity:0;transition:.25s;pointer-events:none}
-  .toast.show{opacity:1}
+  /* presenter */
+  .presenter{border:1px dashed #3a4253;border-radius:12px;padding:6px 16px 14px}
+  .presenter > summary{font-weight:600;color:var(--dim)}
+  .ctl{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:10px}
+  @media(max-width:1000px){.ctl{grid-template-columns:1fr}}
+  .events{font:12.5px var(--mono);color:var(--dim);max-height:180px;overflow:auto}
+  .events div{padding:2px 0}
 </style>
 </head>
 <body>
 <div class="wrap">
+<header>
+  <h1>Order Platform <span>— live demo</span></h1>
+  <div class="badges">
+    <a class="badge" id="jaegerBadge" target="_blank" href="#">Jaeger <b>…</b></a>
+    <span class="badge">LLM <b id="llmBadge">…</b></span>
+    <a class="badge" href="/classic">classic RAG vs KAG view</a>
+  </div>
+</header>
 
-  <header>
-    <h1>Root Cause Analysis <span>— OpenTelemetry + KAG</span></h1>
-    <div style="display:flex;gap:9px;align-items:center">
-      <span class="badge" id="llmBadge">llm: <b>…</b></span>
-      <a href="/graph.html" target="_blank" style="text-decoration:none">
-        <button>Knowledge graph ↗</button></a>
-    </div>
-  </header>
+<!-- 1. the application -->
+<section>
+  <div class="step"><span class="n">1</span><h2>The application</h2>
+    <p>Four Spring Boot microservices, every request traced with OpenTelemetry into Jaeger.</p></div>
+  <div class="grid4" id="services"></div>
+  <div class="card arch">
+    <svg viewBox="0 0 980 190" id="arch" aria-label="Service architecture">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+        orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a5263"/></marker></defs>
+      <path class="edge" d="M110,95 H170" marker-end="url(#ah)"/>
+      <path class="edge" d="M330,80 C380,40 400,40 450,40" marker-end="url(#ah)"/>
+      <path class="edge" d="M330,110 C380,150 400,150 450,150" marker-end="url(#ah)"/>
+      <path class="edge" d="M610,150 H670" marker-end="url(#ah)"/>
+      <path class="edge" d="M755,122 C755,85 690,58 612,58" marker-end="url(#ah)"/>
+      <path class="edge" d="M610,40 H800" marker-end="url(#ah)"/>
+      <g><rect x="20" y="70" width="90" height="50" rx="9" fill="none" stroke="#3a4253" stroke-dasharray="4 3"/>
+        <text x="65" y="100" text-anchor="middle">customer</text></g>
+      <g class="node" data-svc="order-api"><rect x="170" y="65" width="160" height="60" rx="10"/>
+        <text x="250" y="92" text-anchor="middle">order-api</text>
+        <text class="sub" x="250" y="110" text-anchor="middle">:8081 REST</text></g>
+      <g class="node" data-svc="inventory-svc"><rect x="450" y="12" width="160" height="56" rx="10"/>
+        <text x="530" y="37" text-anchor="middle">inventory-svc</text>
+        <text class="sub" x="530" y="55" text-anchor="middle">:8082 reserve stock</text></g>
+      <g class="node" data-svc="broker"><rect x="450" y="122" width="160" height="56" rx="10"/>
+        <text x="530" y="147" text-anchor="middle">broker</text>
+        <text class="sub" x="530" y="165" text-anchor="middle">order.events queue</text></g>
+      <g class="node" data-svc="notification-svc"><rect x="670" y="122" width="170" height="56" rx="10"/>
+        <text x="755" y="147" text-anchor="middle">notification-svc</text>
+        <text class="sub" x="755" y="165" text-anchor="middle">:8083 consumer</text></g>
+      <g><rect x="800" y="15" width="150" height="50" rx="9" fill="none" stroke="#3a4253" stroke-dasharray="4 3"/>
+        <text x="875" y="45" text-anchor="middle">H2 database</text></g>
+    </svg>
+  </div>
+</section>
 
-  <div class="strip">
+<!-- 2. try it -->
+<section>
+  <div class="step"><span class="n">2</span><h2>Use it</h2>
+    <p>Send real requests: each one becomes a trace you can open in Jaeger.</p></div>
+  <div class="two">
     <div class="card">
-      <div class="lbl">System</div>
-      <div class="pills" id="pills"><span class="note">probing…</span></div>
+      <div class="lbl">Requests</div>
+      <div class="row" style="margin-bottom:10px">
+        <select id="sku"><option>SKU-1001</option><option>SKU-1002</option><option>SKU-1003</option></select>
+      </div>
+      <div class="row">
+        <button class="go" onclick="tryIt('place_order')">Place order</button>
+        <button onclick="tryIt('availability')">Check availability</button>
+        <button onclick="tryIt('inventory')">List inventory</button>
+        <button onclick="tryIt('recent')">Recent orders</button>
+      </div>
+      <div class="traffic">
+        <button id="trafficBtn" onclick="toggleTraffic()">Start steady traffic</button>
+        <div class="stat"><span id="tSent">0</span><small>requests</small></div>
+        <div class="stat c-UP"><span id="tOk">0</span><small>succeeded</small></div>
+        <div class="stat c-DOWN"><span id="tFail">0</span><small>failed</small></div>
+        <div class="spark" id="spark" title="last 60 requests"></div>
+      </div>
     </div>
     <div class="card">
-      <div class="lbl">inventory-svc pool</div>
-      <div class="metric" id="poolVal">–</div>
-      <div class="sub" id="poolSub">waiting</div>
-    </div>
-    <div class="card">
-      <div class="lbl">order.events queue</div>
-      <div class="metric" id="lagVal">–</div>
-      <div class="sub" id="lagSub">waiting</div>
+      <div class="lbl">Response</div>
+      <div id="resp" class="empty">Click a request to see the live response.</div>
     </div>
   </div>
+</section>
 
-  <div class="controls">
-    <button class="danger" data-act="reset">Reset to healthy</button>
-    <button data-act="loadlight">Baseline load (45s)</button>
-    <button data-act="scenario1">Scenario 1 — poison message</button>
-    <button class="danger" data-act="scenario2">Scenario 2 — starve the pool</button>
-    <button data-act="load">Drive load (75s)</button>
-    <span class="note" id="ctlMsg"></span>
-  </div>
-
+<!-- 3. ask -->
+<section>
+  <div class="step"><span class="n">3</span><h2>Ask the system</h2>
+    <p>The engine checks health, reads the traces, walks the knowledge graph, and answers in a fixed structured format.</p></div>
   <div class="qrow">
-    <input type="text" id="question"
-           value="What is the root cause of the current incident?">
-    <button class="go" id="runBtn">Run analysis</button>
+    <input id="question" type="text" value="Is anything breaking, or is the application running fine?"
+           onkeydown="if(event.key==='Enter')ask()">
+    <button class="go" id="askBtn" onclick="ask()">Ask</button>
   </div>
+  <div class="chips">
+    <button class="chip" onclick="askQ('Is anything breaking, or is the application running fine?')">Is anything breaking?</button>
+    <button class="chip" onclick="askQ('Which service is down, what caused it, and since when?')">What is down, why, since when?</button>
+    <button class="chip" onclick="askQ('Customers say placing orders is slow or failing. What is going on?')">Orders are failing — why?</button>
+    <button class="chip" onclick="askQ('Is the incident over? When did it start and end?')">Is it fixed?</button>
+  </div>
+  <div class="stages" id="stages"></div>
+  <div id="answer"><div class="card empty">Ask a question to get a diagnosis.</div></div>
+</section>
 
-  <div class="cols">
-    <div class="col rag">
-      <h2>Baseline — flat log retrieval <small>what most demos do</small></h2>
-      <div class="body" id="ragBody"><span class="note">Not run yet.</span></div>
+<!-- 4. presenter -->
+<details class="presenter" id="presenter">
+  <summary>Presenter controls — break something</summary>
+  <div class="ctl">
+    <div class="card">
+      <div class="lbl">Slow down data fetching (inventory-svc)</div>
+      <div class="row">
+        <input type="number" id="latMs" value="2500" step="250" min="0"> ms
+        <button class="danger" onclick="chaos({action:'latency', ms:+latMs.value})">Inject delay</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input type="number" id="errRate" value="0.5" step="0.1" min="0" max="1"> rate
+        <button class="danger" onclick="chaos({action:'errors', rate:+errRate.value})">Inject errors</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="ok" onclick="chaos({action:'clear'})">Clear delay / errors</button>
+      </div>
+      <div style="margin-top:10px;font:13px var(--mono);color:var(--dim)">now: <span id="chaosState">–</span></div>
     </div>
-    <div class="col kag">
-      <h2>KAG — knowledge-graph retrieval <small id="elapsed"></small></h2>
-      <div class="body" id="kagBody"><span class="note">Not run yet.</span></div>
+    <div class="card">
+      <div class="lbl">Stop / start a service</div>
+      <div class="row">
+        <select id="svcPick">
+          <option>inventory-svc</option><option>notification-svc</option>
+          <option>broker</option><option>order-api</option>
+        </select>
+        <button class="danger" onclick="chaos({action:'kill', service:svcPick.value})">Stop</button>
+        <button class="ok" onclick="chaos({action:'restart', service:svcPick.value})">Restart</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="ok" onclick="chaos({action:'heal'})">Heal everything</button>
+      </div>
+      <pre id="ctlLog" style="margin-top:10px;max-height:120px">idle</pre>
+    </div>
+    <div class="card">
+      <div class="lbl">Health monitor transitions</div>
+      <div class="events" id="events">none yet</div>
     </div>
   </div>
+</details>
 </div>
 
-<div class="toast" id="toast"></div>
-
 <script>
-const $ = s => document.querySelector(s);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const stateLabel = s => s === 'UP' ? 'UP' : s === 'DOWN' ? 'DOWN' : s === 'DEGRADED' ? 'DEGRADED' : '…';
+
+async function overview() {
+  let d; try { d = await (await fetch('/api/overview')).json(); } catch { return; }
+  $('services').innerHTML = d.services.map(s => `
+    <div class="card svc ${s.state}">
+      <div class="top"><span class="dot ${s.state}"></span><span class="name">${esc(s.name)}</span>
+        <span class="state c-${s.state}">${stateLabel(s.state)}</span></div>
+      <div class="role">${esc(s.role)} · :${s.port}</div>
+      <div class="links">
+        <a href="${s.swagger}" target="_blank">Swagger</a>
+        <a href="${s.health}" target="_blank">Health</a>
+        <a href="${s.traces}" target="_blank">Traces</a>
+      </div>
+    </div>`).join('');
+  document.querySelectorAll('#arch .node').forEach(g => {
+    const s = d.services.find(x => x.name === g.dataset.svc);
+    g.setAttribute('class', 'node ' + (s ? s.state : ''));
+  });
+  $('jaegerBadge').href = d.jaeger.url;
+  $('jaegerBadge').innerHTML = 'Jaeger <b>' + (d.jaeger.up ? 'up' : 'down') + '</b>';
+  $('llmBadge').textContent = d.llm.provider === 'none' ? 'none (rule-based)' : d.llm.model;
+
+  const t = d.traffic;
+  $('trafficBtn').textContent = t.on ? 'Stop traffic' : 'Start steady traffic';
+  $('tSent').textContent = t.sent; $('tOk').textContent = t.ok; $('tFail').textContent = t.failed;
+  $('spark').innerHTML = (t.recent || []).map(x => `<i class="${x ? '' : 'f'}"></i>`).join('');
+
+  const c = d.chaos || {};
+  $('chaosState').textContent = c.latencyMs === undefined ? 'inventory-svc unreachable'
+      : `delay ${c.latencyMs} ms, error rate ${c.errorRate}`;
+  $('events').innerHTML = (d.events || []).length
+      ? d.events.slice().reverse().map(e =>
+          `<div><span class="c-${e.to === 'UP' ? 'UP' : e.to}">${esc(e.at.slice(11))}</span> ${esc(e.service)} ${esc(e.from)} → ${esc(e.to)} ${e.detail ? '(' + esc(e.detail) + ')' : ''}</div>`).join('')
+      : 'none yet';
+  if (d.control && d.control.log) $('ctlLog').textContent = d.control.log;
+}
+
+async function tryIt(action) {
+  $('resp').innerHTML = '<div class="empty">sending…</div>';
+  const r = await (await fetch('/api/try', {method:'POST', headers:{'Content-Type':'application/json'},
+                   body: JSON.stringify({action, sku: $('sku').value})})).json();
+  const ok = r.status >= 200 && r.status < 300;
+  $('resp').innerHTML = `
+    <div class="resp-head">
+      <span class="code ${ok ? 'ok' : 'bad'}">${r.status || 'ERR'}</span>
+      <span>${esc(r.request)}</span><span>${r.ms} ms</span>
+      ${r.jaeger ? `<a href="${r.jaeger}" target="_blank">open trace in Jaeger ↗</a>` : ''}
+    </div>
+    <pre>${esc(JSON.stringify(r.body, null, 2))}</pre>`;
+}
+
+async function toggleTraffic() {
+  const on = $('trafficBtn').textContent.startsWith('Start');
+  await fetch('/api/traffic', {method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({on})});
+  overview();
+}
+
+async function chaos(body) {
+  const r = await (await fetch('/api/chaos', {method:'POST', headers:{'Content-Type':'application/json'},
+                   body: JSON.stringify(body)})).json();
+  $('ctlLog').textContent = r.message || r.error || JSON.stringify(r);
+  overview();
+}
+
+/* ---- ask ---- */
 let polling = null;
+function askQ(q) { $('question').value = q; ask(); }
 
-function toast(msg){
-  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 2600);
-}
-const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-
-// ---- status -------------------------------------------------------------
-async function refreshStatus(){
-  let d; try { d = await (await fetch('/api/status')).json(); } catch { return; }
-
-  $('#pills').innerHTML = d.services.map(s =>
-    `<span class="pill"><span class="dot ${s.up?'up':'down'}"></span>${esc(s.name)}</span>`).join('');
-
-  $('#llmBadge').innerHTML = d.llm.provider === 'none'
-    ? 'llm: <b style="color:var(--amber)">not configured</b>'
-    : `llm: <b>${esc(d.llm.model)}</b>`;
-
-  const p = d.pool;
-  $('#poolVal').textContent = p.max == null ? '–' : `${p.active ?? 0} / ${p.max}`;
-  $('#poolVal').className = 'metric ' + (p.max == null ? '' : p.degraded ? 'bad' : 'ok');
-  $('#poolSub').textContent = p.max == null ? 'unreachable'
-    : p.degraded ? `capacity ${p.max}, below baseline 20 · ${p.awaiting ?? 0} threads waiting`
-                 : `healthy · ${p.awaiting ?? 0} threads waiting`;
-
-  const q = d.queue;
-  $('#lagVal').textContent = q.idle ? 'idle' : `${(q.peakLagMs/1000).toFixed(1)}s`;
-  $('#lagVal').className = 'metric ' + (q.degraded ? 'bad' : q.idle ? '' : 'ok');
-  $('#lagSub').textContent = q.idle
-    ? `no traffic in the last 5 min · ${q.processed} processed total`
-    : `peak lag (5m window) · now ${q.lastLagMs}ms · ${q.processed} processed`;
-
-  const busy = d.control.running;
-  document.querySelectorAll('button[data-act]').forEach(b => b.disabled = busy);
-  $('#ctlMsg').textContent = busy ? (d.control.log || 'working…') : '';
+async function ask() {
+  const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({question: $('question').value})});
+  if (!r.ok) return;
+  $('askBtn').disabled = true;
+  $('answer').innerHTML = '<div class="card empty">thinking…</div>';
+  clearInterval(polling);
+  polling = setInterval(pollAsk, 400);
 }
 
-// ---- scenario controls --------------------------------------------------
-document.querySelectorAll('button[data-act]').forEach(btn => {
-  btn.onclick = async () => {
-    const r = await fetch('/api/control', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action: btn.dataset.act})});
-    const j = await r.json();
-    toast(j.message || j.error || 'started');
-    refreshStatus();
-  };
-});
-
-// ---- analysis -----------------------------------------------------------
-$('#runBtn').onclick = async () => {
-  const r = await fetch('/api/analyze', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({question: $('#question').value})});
-  const j = await r.json();
-  if (j.error) return toast(j.error);
-  $('#runBtn').disabled = true;
-  $('#ragBody').innerHTML = '<span class="note">running…</span>';
-  if (polling) clearInterval(polling);
-  polling = setInterval(pollAnalysis, 250);
-  pollAnalysis();
-};
-
-function stageHtml(st){
-  const mark = {done:'✓', error:'!', empty:'–', skipped:'–'}[st.status] || '';
-  return `<div class="stage ${st.status}">
-    <div class="stg-ico">${mark}</div>
-    <div style="flex:1">
-      <div class="stg-name">${esc(st.label)}</div>
-      <div class="stg-hint">${esc(st.hint)}</div>
-      ${st.detail ? `<div class="stg-detail">${esc(st.detail)}</div>` : ''}
-    </div></div>`;
+async function pollAsk() {
+  let d; try { d = await (await fetch('/api/ask')).json(); } catch { return; }
+  $('stages').innerHTML = (d.stages || []).map(s => `
+    <div class="stg ${s.status}"><b>${s.label}</b><div>${esc(s.detail || s.hint)}</div></div>`).join('');
+  if (d.running) {
+    $('answer').innerHTML = `<div class="card empty">thinking… ${d.elapsed}s</div>`;
+    return;
+  }
+  clearInterval(polling); $('askBtn').disabled = false;
+  if (!d.report) { $('answer').innerHTML = `<div class="card empty">${esc(d.error || 'no answer')}</div>`; return; }
+  render(d);
 }
 
-function candTable(c){
-  const rows = c.map((x,i) => `<tr class="${i===0?'win':''}">
-      <td class="nid">${esc(x.id)}</td>
-      <td class="sc">${x.blast.toFixed(2)}</td>
-      <td class="sc">${x.mech.toFixed(2)}</td>
-      <td class="sc">${x.change.toFixed(2)}</td>
-      <td class="sc">${x.anom.toFixed(2)}</td>
-      <td class="sc total">${x.score.toFixed(3)}</td></tr>`).join('');
-  const paths = (c[0]?.paths || []).map(p => `<div class="path">${esc(p)}</div>`).join('');
-  return `<table><thead><tr><th>candidate</th><th style="text-align:right">blast</th>
-      <th style="text-align:right">mech</th><th style="text-align:right">change</th>
-      <th style="text-align:right">anom</th><th style="text-align:right">score</th>
-      </tr></thead><tbody>${rows}</tbody></table>
-      ${paths ? `<div class="paths"><div class="lbl" style="margin-top:12px">
-        Causal paths — selected candidate</div>${paths}</div>` : ''}`;
+function list(items, ordered) {
+  if (!items || !items.length) return '<span style="color:var(--dim)">–</span>';
+  const tag = ordered ? 'ol' : 'ul';
+  return `<${tag}>${items.map(i => `<li>${esc(i)}</li>`).join('')}</${tag}>`;
 }
 
-async function pollAnalysis(){
-  let d; try { d = await (await fetch('/api/analysis')).json(); } catch { return; }
-
-  $('#elapsed').textContent = d.elapsed ? `${d.elapsed}s` : '';
-
-  // KAG panel
-  let k = `<div class="lbl">Retrieval pipeline</div>` + d.stages.map(stageHtml).join('');
-  if (d.kag.candidates?.length) {
-    k += `<div class="lbl" style="margin-top:14px">Ranked candidates</div>` + candTable(d.kag.candidates);
+function render(d) {
+  const r = d.report, i = r.incident;
+  let html = `
+    <div class="verdict ${r.overall_status}">
+      <div class="big c-${r.overall_status}">${r.overall_status}${r.is_anything_breaking ? ' — something is breaking' : ''}</div>
+      <div class="answer">${esc(r.answer)}</div>
+      <div class="meta">confidence ${r.confidence} · ${esc(r.generated_by)} · checked ${esc(r.checked_at)} · ${d.elapsed}s</div>
+    </div>`;
+  if (i) {
+    html += `
+    <div class="facts">
+      <div class="card fact"><div class="lbl">Root cause</div><div class="v c-DOWN">${esc(i.root_cause_component)}</div></div>
+      <div class="card fact"><div class="lbl">Started</div><div class="v">${esc(i.started_at || 'unknown')}</div></div>
+      <div class="card fact"><div class="lbl">${i.ongoing ? 'Status' : 'Ended'}</div>
+        <div class="v ${i.ongoing ? 'c-DOWN' : 'c-UP'}">${i.ongoing ? 'ONGOING' : esc(i.ended_at || 'resolved')}</div></div>
+      <div class="card fact"><div class="lbl">Affected</div><div class="v">${esc(i.affected_services.join(', '))}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="lbl">${esc(i.category.replace('_', ' '))}</div>
+      <div style="font-size:17px;font-weight:600">${esc(i.title)}</div>
+      <div style="margin-top:4px">${esc(i.root_cause)}</div>
+    </div>
+    <div class="lists">
+      <div class="card"><div class="lbl">How it spread</div>${list(i.causal_chain, true)}</div>
+      <div class="card"><div class="lbl">Evidence</div>${list(i.evidence)}</div>
+      <div class="card"><div class="lbl">What to do</div>${list(i.remediation, true)}</div>
+    </div>`;
   }
-  if (d.kag.answer) {
-    k += `<div class="lbl" style="margin-top:14px">Root cause</div>
-          <div class="answer">${esc(d.kag.answer)}</div>`;
-  } else if (d.kag.error) {
-    k += `<div class="note" style="margin-top:12px">${esc(d.kag.error)}</div>`;
-  }
-  if (d.kag.prompt) {
-    k += `<details><summary>Show the exact prompt sent (${d.kag.prompt.length} chars)</summary>
-          <pre>${esc(d.kag.prompt)}</pre></details>`;
-  }
-  $('#kagBody').innerHTML = k;
-
-  // Baseline panel
-  if (Object.keys(d.rag).length) {
-    let r = '';
-    if (d.rag.input) {
-      r += `<div class="lbl">Everything it can see (${d.rag.lines} lines)</div>
-            <pre class="flat">${esc(d.rag.input)}</pre>`;
-    }
-    if (d.rag.answer) {
-      r += `<div class="lbl" style="margin-top:14px">Its conclusion</div>
-            <div class="answer">${esc(d.rag.answer)}</div>`;
-    } else if (d.rag.error) {
-      r += `<div class="note" style="margin-top:12px">${esc(d.rag.error)}</div>`;
-    }
-    $('#ragBody').innerHTML = r;
-  } else if (d.running) {
-    $('#ragBody').innerHTML = '<span class="note">running…</span>';
-  }
-
-  if (!d.running) {
-    clearInterval(polling); polling = null;
-    $('#runBtn').disabled = false;
-  }
+  html += `
+    <div class="card">
+      <div class="lbl">Services right now (measured, not generated)</div>
+      <table><tr><th>Service</th><th>Status</th><th>Error rate</th><th>p95</th><th>Requests</th><th>Detail</th></tr>
+      ${r.services.map(s => `<tr><td class="mono">${esc(s.name)}</td>
+        <td class="mono c-${s.status}">${s.status}</td><td class="mono">${s.error_rate_pct}%</td>
+        <td class="mono">${Math.round(s.p95_latency_ms)} ms</td><td class="mono">${s.requests_observed}</td>
+        <td>${esc(s.detail)}</td></tr>`).join('')}
+      </table>
+      <details><summary>Structured answer — the Pydantic <code>HealthReport</code> JSON</summary>
+        <pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
+      <details><summary>What the LLM was given (retrieved subgraph + measurements)</summary>
+        <pre>${esc(d.prompt)}</pre></details>
+      ${d.error ? `<details open><summary>LLM error — answered by rules instead</summary><pre>${esc(d.error)}</pre></details>` : ''}
+    </div>`;
+  $('answer').innerHTML = html;
 }
 
-refreshStatus();
-setInterval(refreshStatus, 2000);
+overview();
+setInterval(overview, 2000);
 </script>
 </body>
 </html>

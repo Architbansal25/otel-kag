@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RCA Console — OpenTelemetry + KAG</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2b313d;
+    --text:#e8ecf3; --dim:#8b95a7; --blue:#5b9bff; --red:#ff5a4d;
+    --green:#3ddc84; --amber:#ffd60a; --violet:#b98bff;
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:1640px;margin:0 auto;padding:18px 22px 60px}
+  h1{font-size:20px;margin:0;letter-spacing:.2px}
+  h1 span{color:var(--dim);font-weight:400}
+  header{display:flex;align-items:center;justify-content:space-between;
+         gap:16px;flex-wrap:wrap;margin-bottom:16px}
+  .badge{font:13px var(--mono);background:var(--panel2);border:1px solid var(--line);
+         padding:5px 11px;border-radius:999px;color:var(--dim)}
+  .badge b{color:var(--violet);font-weight:600}
+
+  .card{background:var(--panel);border:1px solid var(--line);
+        border-radius:12px;padding:14px 16px}
+  .strip{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-bottom:12px}
+  @media(max-width:1100px){.strip{grid-template-columns:1fr}}
+  .lbl{font-size:11px;letter-spacing:.9px;text-transform:uppercase;
+       color:var(--dim);margin-bottom:9px}
+
+  .pills{display:flex;gap:8px;flex-wrap:wrap}
+  .pill{display:flex;align-items:center;gap:7px;background:var(--panel2);
+        border:1px solid var(--line);border-radius:999px;padding:5px 12px;
+        font:13px var(--mono)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+  .dot.up{background:var(--green);box-shadow:0 0 8px rgba(61,220,132,.7)}
+  .dot.down{background:var(--red);box-shadow:0 0 8px rgba(255,90,77,.7)}
+
+  .metric{font:26px/1.2 var(--mono);font-weight:600}
+  .metric.bad{color:var(--red)} .metric.ok{color:var(--green)}
+  .sub{font-size:12.5px;color:var(--dim);margin-top:3px}
+
+  .controls{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  button{font:14px/1 system-ui,sans-serif;font-weight:550;cursor:pointer;
+         border-radius:9px;padding:11px 15px;border:1px solid var(--line);
+         background:var(--panel2);color:var(--text);transition:.14s}
+  button:hover:not(:disabled){border-color:var(--blue);transform:translateY(-1px)}
+  button:disabled{opacity:.42;cursor:not-allowed}
+  button.danger{border-color:#5d2b2b;color:#ffb1a8}
+  button.danger:hover:not(:disabled){border-color:var(--red)}
+  button.go{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:700}
+  button.go:hover:not(:disabled){background:#7fb2ff}
+
+  .qrow{display:flex;gap:9px;margin-bottom:14px}
+  input[type=text]{flex:1;background:var(--panel);border:1px solid var(--line);
+      border-radius:9px;padding:12px 14px;color:var(--text);font:15px system-ui,sans-serif}
+  input[type=text]:focus{outline:none;border-color:var(--blue)}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:1100px){.cols{grid-template-columns:1fr}}
+  .col{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+       overflow:hidden;display:flex;flex-direction:column}
+  .col > h2{margin:0;padding:12px 16px;font-size:14.5px;border-bottom:1px solid var(--line);
+            display:flex;align-items:center;gap:9px}
+  .col.rag > h2{background:rgba(255,90,77,.09)}
+  .col.kag > h2{background:rgba(91,155,255,.10)}
+  .col h2 small{color:var(--dim);font-weight:400;font-size:12.5px}
+  .body{padding:14px 16px;flex:1}
+
+  /* stage tracker — the piece the room actually watches */
+  .stage{display:flex;gap:11px;align-items:flex-start;padding:9px 0;
+         border-bottom:1px solid rgba(43,49,61,.6)}
+  .stage:last-child{border-bottom:none}
+  .stg-ico{width:19px;height:19px;border-radius:50%;flex:none;margin-top:2px;
+           border:2px solid var(--line);display:grid;place-items:center;
+           font-size:11px;font-weight:700}
+  .stage.running .stg-ico{border-color:var(--blue);border-top-color:transparent;
+           animation:spin .8s linear infinite}
+  .stage.done .stg-ico{border-color:var(--green);background:var(--green);color:#04120a}
+  .stage.empty .stg-ico,.stage.skipped .stg-ico{border-color:var(--dim);color:var(--dim)}
+  .stage.error .stg-ico{border-color:var(--red);background:var(--red);color:#1a0603}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .stg-name{font:13px var(--mono);font-weight:700;letter-spacing:.7px}
+  .stage.pending .stg-name{color:var(--dim)}
+  .stg-hint{font-size:12.5px;color:var(--dim)}
+  .stg-detail{font:12.5px var(--mono);color:var(--green);margin-top:2px}
+  .stage.running .stg-detail{color:var(--blue)}
+
+  table{width:100%;border-collapse:collapse;font:12.5px var(--mono);margin-top:4px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:5px 7px;
+     border-bottom:1px solid var(--line);font-size:11px;letter-spacing:.5px}
+  td{padding:6px 7px;border-bottom:1px solid rgba(43,49,61,.5)}
+  tr.win td{background:rgba(61,220,132,.09)}
+  tr.win td:first-child{box-shadow:inset 3px 0 0 var(--green)}
+  .nid{color:var(--text)} tr.win .nid{color:var(--green);font-weight:700}
+  .sc{text-align:right;color:var(--dim)} .sc.total{color:var(--text);font-weight:700}
+
+  pre{background:#0b0d12;border:1px solid var(--line);border-radius:9px;
+      padding:12px;overflow:auto;max-height:340px;
+      font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;margin:0}
+  pre.flat{color:#ffb1a8;max-height:250px}
+  .answer{background:#0b0d12;border:1px solid var(--line);border-left:3px solid var(--green);
+          border-radius:9px;padding:13px 15px;white-space:pre-wrap;font-size:14.5px;
+          max-height:460px;overflow:auto}
+  .col.rag .answer{border-left-color:var(--red)}
+  .note{color:var(--dim);font-size:13px;font-style:italic}
+  .paths{margin-top:9px}
+  .path{font:11.5px var(--mono);color:var(--dim);background:#0b0d12;padding:7px 9px;
+        border-radius:7px;margin-top:5px;border-left:2px solid var(--green);
+        white-space:pre-wrap;word-break:break-word}
+  details{margin-top:11px} summary{cursor:pointer;color:var(--dim);font-size:13px}
+  summary:hover{color:var(--blue)}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+         background:var(--panel2);border:1px solid var(--blue);border-radius:9px;
+         padding:10px 17px;font-size:14px;opacity:0;transition:.25s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Root Cause Analysis <span>— OpenTelemetry + KAG</span></h1>
+    <div style="display:flex;gap:9px;align-items:center">
+      <span class="badge" id="llmBadge">llm: <b>…</b></span>
+      <a href="/graph.html" target="_blank" style="text-decoration:none">
+        <button>Knowledge graph ↗</button></a>
+    </div>
+  </header>
+
+  <div class="strip">
+    <div class="card">
+      <div class="lbl">System</div>
+      <div class="pills" id="pills"><span class="note">probing…</span></div>
+    </div>
+    <div class="card">
+      <div class="lbl">inventory-svc pool</div>
+      <div class="metric" id="poolVal">–</div>
+      <div class="sub" id="poolSub">waiting</div>
+    </div>
+    <div class="card">
+      <div class="lbl">order.events queue</div>
+      <div class="metric" id="lagVal">–</div>
+      <div class="sub" id="lagSub">waiting</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="danger" data-act="reset">Reset to healthy</button>
+    <button data-act="loadlight">Baseline load (45s)</button>
+    <button data-act="scenario1">Scenario 1 — poison message</button>
+    <button class="danger" data-act="scenario2">Scenario 2 — starve the pool</button>
+    <button data-act="load">Drive load (75s)</button>
+    <span class="note" id="ctlMsg"></span>
+  </div>
+
+  <div class="qrow">
+    <input type="text" id="question"
+           value="What is the root cause of the current incident?">
+    <button class="go" id="runBtn">Run analysis</button>
+  </div>
+
+  <div class="cols">
+    <div class="col rag">
+      <h2>Baseline — flat log retrieval <small>what most demos do</small></h2>
+      <div class="body" id="ragBody"><span class="note">Not run yet.</span></div>
+    </div>
+    <div class="col kag">
+      <h2>KAG — knowledge-graph retrieval <small id="elapsed"></small></h2>
+      <div class="body" id="kagBody"><span class="note">Not run yet.</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let polling = null;
+
+function toast(msg){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2600);
+}
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- status -------------------------------------------------------------
+async function refreshStatus(){
+  let d; try { d = await (await fetch('/api/status')).json(); } catch { return; }
+
+  $('#pills').innerHTML = d.services.map(s =>
+    `<span class="pill"><span class="dot ${s.up?'up':'down'}"></span>${esc(s.name)}</span>`).join('');
+
+  $('#llmBadge').innerHTML = d.llm.provider === 'none'
+    ? 'llm: <b style="color:var(--amber)">not configured</b>'
+    : `llm: <b>${esc(d.llm.model)}</b>`;
+
+  const p = d.pool;
+  $('#poolVal').textContent = p.max == null ? '–' : `${p.active ?? 0} / ${p.max}`;
+  $('#poolVal').className = 'metric ' + (p.max == null ? '' : p.degraded ? 'bad' : 'ok');
+  $('#poolSub').textContent = p.max == null ? 'unreachable'
+    : p.degraded ? `capacity ${p.max}, below baseline 20 · ${p.awaiting ?? 0} threads waiting`
+                 : `healthy · ${p.awaiting ?? 0} threads waiting`;
+
+  const q = d.queue;
+  $('#lagVal').textContent = q.idle ? 'idle' : `${(q.peakLagMs/1000).toFixed(1)}s`;
+  $('#lagVal').className = 'metric ' + (q.degraded ? 'bad' : q.idle ? '' : 'ok');
+  $('#lagSub').textContent = q.idle
+    ? `no traffic in the last 5 min · ${q.processed} processed total`
+    : `peak lag (5m window) · now ${q.lastLagMs}ms · ${q.processed} processed`;
+
+  const busy = d.control.running;
+  document.querySelectorAll('button[data-act]').forEach(b => b.disabled = busy);
+  $('#ctlMsg').textContent = busy ? (d.control.log || 'working…') : '';
+}
+
+// ---- scenario controls --------------------------------------------------
+document.querySelectorAll('button[data-act]').forEach(btn => {
+  btn.onclick = async () => {
+    const r = await fetch('/api/control', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action: btn.dataset.act})});
+    const j = await r.json();
+    toast(j.message || j.error || 'started');
+    refreshStatus();
+  };
+});
+
+// ---- analysis -----------------------------------------------------------
+$('#runBtn').onclick = async () => {
+  const r = await fetch('/api/analyze', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({question: $('#question').value})});
+  const j = await r.json();
+  if (j.error) return toast(j.error);
+  $('#runBtn').disabled = true;
+  $('#ragBody').innerHTML = '<span class="note">running…</span>';
+  if (polling) clearInterval(polling);
+  polling = setInterval(pollAnalysis, 250);
+  pollAnalysis();
+};
+
+function stageHtml(st){
+  const mark = {done:'✓', error:'!', empty:'–', skipped:'–'}[st.status] || '';
+  return `<div class="stage ${st.status}">
+    <div class="stg-ico">${mark}</div>
+    <div style="flex:1">
+      <div class="stg-name">${esc(st.label)}</div>
+      <div class="stg-hint">${esc(st.hint)}</div>
+      ${st.detail ? `<div class="stg-detail">${esc(st.detail)}</div>` : ''}
+    </div></div>`;
+}
+
+function candTable(c){
+  const rows = c.map((x,i) => `<tr class="${i===0?'win':''}">
+      <td class="nid">${esc(x.id)}</td>
+      <td class="sc">${x.blast.toFixed(2)}</td>
+      <td class="sc">${x.mech.toFixed(2)}</td>
+      <td class="sc">${x.change.toFixed(2)}</td>
+      <td class="sc">${x.anom.toFixed(2)}</td>
+      <td class="sc total">${x.score.toFixed(3)}</td></tr>`).join('');
+  const paths = (c[0]?.paths || []).map(p => `<div class="path">${esc(p)}</div>`).join('');
+  return `<table><thead><tr><th>candidate</th><th style="text-align:right">blast</th>
+      <th style="text-align:right">mech</th><th style="text-align:right">change</th>
+      <th style="text-align:right">anom</th><th style="text-align:right">score</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+      ${paths ? `<div class="paths"><div class="lbl" style="margin-top:12px">
+        Causal paths — selected candidate</div>${paths}</div>` : ''}`;
+}
+
+async function pollAnalysis(){
+  let d; try { d = await (await fetch('/api/analysis')).json(); } catch { return; }
+
+  $('#elapsed').textContent = d.elapsed ? `${d.elapsed}s` : '';
+
+  // KAG panel
+  let k = `<div class="lbl">Retrieval pipeline</div>` + d.stages.map(stageHtml).join('');
+  if (d.kag.candidates?.length) {
+    k += `<div class="lbl" style="margin-top:14px">Ranked candidates</div>` + candTable(d.kag.candidates);
+  }
+  if (d.kag.answer) {
+    k += `<div class="lbl" style="margin-top:14px">Root cause</div>
+          <div class="answer">${esc(d.kag.answer)}</div>`;
+  } else if (d.kag.error) {
+    k += `<div class="note" style="margin-top:12px">${esc(d.kag.error)}</div>`;
+  }
+  if (d.kag.prompt) {
+    k += `<details><summary>Show the exact prompt sent (${d.kag.prompt.length} chars)</summary>
+          <pre>${esc(d.kag.prompt)}</pre></details>`;
+  }
+  $('#kagBody').innerHTML = k;
+
+  // Baseline panel
+  if (Object.keys(d.rag).length) {
+    let r = '';
+    if (d.rag.input) {
+      r += `<div class="lbl">Everything it can see (${d.rag.lines} lines)</div>
+            <pre class="flat">${esc(d.rag.input)}</pre>`;
+    }
+    if (d.rag.answer) {
+      r += `<div class="lbl" style="margin-top:14px">Its conclusion</div>
+            <div class="answer">${esc(d.rag.answer)}</div>`;
+    } else if (d.rag.error) {
+      r += `<div class="note" style="margin-top:12px">${esc(d.rag.error)}</div>`;
+    }
+    $('#ragBody').innerHTML = r;
+  } else if (d.running) {
+    $('#ragBody').innerHTML = '<span class="note">running…</span>';
+  }
+
+  if (!d.running) {
+    clearInterval(polling); polling = null;
+    $('#runBtn').disabled = false;
+  }
+}
+
+refreshStatus();
+setInterval(refreshStatus, 2000);
+</script>
+</body>
+</html>

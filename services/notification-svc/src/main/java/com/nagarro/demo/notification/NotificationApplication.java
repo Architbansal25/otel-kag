@@ -1,5 +1,7 @@
 package com.nagarro.demo.notification;
 
+import io.swagger.v3.oas.annotations.OpenAPIDefinition;
+import io.swagger.v3.oas.annotations.info.Info;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -9,6 +11,8 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 
+@OpenAPIDefinition(info = @Info(title = "notification-svc", version = "1.0.0",
+        description = "Consumes order events and notifies customers."))
 @SpringBootApplication
 @EnableJms
 public class NotificationApplication {

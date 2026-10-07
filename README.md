@@ -1,132 +1,176 @@
-# OTel Demo → Jaeger → OpenSPG KAG Bridge
+# Order Platform: "Is anything breaking?" — OpenTelemetry + Knowledge-Graph RCA
 
-A proof-of-concept that pipes error traces from the OpenTelemetry Demo into an
-OpenSPG **KAG** (Knowledge Augmented Generation) reasoning engine for automated
-root-cause analysis.
+A live demo. Four Spring Boot microservices run, every request is traced with
+OpenTelemetry into Jaeger, and you can ask the system in plain English whether
+anything is breaking. The answer comes back in a fixed, structured format
+(a Pydantic `HealthReport`): what is down, why, and since when.
 
 ```
-microservices → otel-collector → Jaeger (traces) / Prometheus (metrics)
-                                        │
-                                        ▼
-                          jaeger_kag_bridge.py → KAG (LLM reasoning)
+customer ─► order-api ─► inventory-svc ─► H2
+               │              ▲
+               └─► broker ─► notification-svc
+                 (order.events)
+
+every service ──OTLP──► Jaeger ──► knowledge graph ──► LLM ──► HealthReport (Pydantic)
+health checks ───────────────────┘   (facts.yaml, deploys, live probes)
 ```
 
-## Contents
+## The demo, step by step
 
-| File | Purpose |
-|------|---------|
-| [docker-compose.yml](docker-compose.yml) | OTel Demo services + Jaeger + Prometheus + KAG on a shared `telemetry-net` |
-| [otel-collector-config.yaml](otel-collector-config.yaml) | Collector pipeline: traces → Jaeger, metrics → Prometheus |
-| [prometheus.yml](prometheus.yml) | Prometheus scrape config |
-| [jaeger_kag_bridge.py](jaeger_kag_bridge.py) | Fetches error traces, builds context, queries KAG |
-| [requirements.txt](requirements.txt) | Python dependencies |
+| # | On stage | Where |
+|---|----------|-------|
+| 1 | **Show the app running.** Four green service cards and a live architecture diagram. | Console `http://localhost:8090` |
+| 2 | **Open Swagger** and fire a request or two (`POST /orders`, `GET /products/{sku}/availability`). | Each card's *Swagger* link, e.g. `http://localhost:8081/swagger-ui.html` |
+| 3 | **Show health:** click *Health* on a card (`/actuator/health`, with db / jms details). | `http://localhost:8081/actuator/health` |
+| 4 | **Show Jaeger:** click *Place order* in the console, then *open trace in Jaeger* to see one request cross three services. | `http://localhost:16686` |
+| 5 | Click **Start steady traffic** so there is always something to observe. | Console, section 2 |
+| 6 | **Ask: "Is anything breaking?"** The answer: `HEALTHY`, nothing breaking, every service measured. | Console, section 3 |
+| 7 | **Break something** (open *Presenter controls* at the bottom). Either inject a delay into inventory-svc's data fetching, or stop a service. | Console, section 4 |
+| 8 | Wait ~20s, then **ask again.** The answer is `DEGRADED`/`DOWN`, with the root-cause service, the time it started, how it spread, evidence, and what to do. | Console, section 3 |
+| 9 | Expand **"Structured answer — the Pydantic HealthReport JSON"** to show it is a typed contract, not free text. | Console |
+| 10 | **Heal everything**, wait, ask *"Is it fixed?"* | Console |
 
-## Prerequisites
+What each fault looks like to the assistant:
 
-- **Docker Desktop** (with `docker compose`)
-- **Python 3.9+**
-- A **Groq API key** (optional — only needed for the LLM reasoning step)
+| Fault (presenter control) | What the audience sees | What the assistant concludes |
+|---|---|---|
+| Inject delay 2500 ms | Orders fail with 504 after 2s | `inventory-svc` is slow (`high_latency`); order-api times out on it |
+| Inject errors 0.5 | Half the orders fail with 502 | `inventory-svc` is failing (`error_spike`) |
+| Stop `inventory-svc` | Orders fail with 503 | `inventory-svc` is down (`service_down`), since the monitor saw it go DOWN |
+| Stop `broker` | Orders fail with 503 `broker_unavailable` | `broker` is down; order-api / notification-svc report jms DOWN |
+| Stop `notification-svc` | Nothing visible to customers | `notification-svc` is down; order events pile up |
 
----
+The delay and error injections are hidden from Swagger and leave no log line or
+change record. The only way to find the cause is to reason from the telemetry.
 
-## Step 1 — Start the telemetry + KAG stack
+## Running it
 
-From the project folder:
+### Windows (WSL2), the original setup
 
-```powershell
-docker compose up -d
+```
+START-DEMO.cmd      starts Jaeger + services in WSL, the console on Windows, opens the browser
+STOP-DEMO.cmd       stops everything
 ```
 
-This launches the microservices, OTel Collector, Jaeger, Prometheus, and the
-`kag-engine` container, all on the `telemetry-net` network.
+The services run inside WSL because endpoint security on the presentation
+laptop stops the Windows JVM from opening sockets. WSL2 forwards the ports, so
+everything is still on `localhost`.
 
-Verify the backends are up:
+### Linux / macOS
 
-| Service | URL |
-|---------|-----|
-| Jaeger UI | http://localhost:16686 |
-| Prometheus | http://localhost:9090 |
-| Frontend | http://localhost:8080 |
-| KAG | http://localhost:8888 |
-
-Check container status:
-
-```powershell
-docker compose ps
+```bash
+./ops/demo.sh deps            # once: download Jaeger
+./ops/demo.sh build           # only if you changed Java code (jars are committed)
+./ops/demo.sh start           # Jaeger + 4 services
+cd kag && pip install -r requirements.txt && python3 ui.py   # console on :8090
 ```
 
-## Step 2 — Generate some error traces
+### The LLM (optional)
 
-Interact with the frontend (http://localhost:8080) so the services emit spans.
-The demo naturally produces some failing / HTTP 500 traces that Jaeger records.
+Without a key the assistant answers from rules, in the same `HealthReport`
+format, so the demo never breaks. With a key, the LLM reasons over the retrieved
+subgraph and fills the schema:
 
-Confirm traces exist in Jaeger by selecting `frontend` or `checkoutservice` in
-the UI service dropdown and searching.
-
-## Step 3 — Set up the Python environment
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+```
+setx ANTHROPIC_API_KEY "sk-ant-..."             # default model: claude-opus-5-5
+setx KAG_EFFORT "low"                            # optional: faster answers on stage
 ```
 
-> The bridge runs steps 1–3 (fetch → parse → format context) **without** the
-> KAG SDK or any LLM. Those pieces are only needed for the reasoning step.
+or any OpenAI-compatible endpoint (Groq, OpenAI, Azure):
 
-## Step 4 — (Optional) Configure the Groq LLM
-
-The KAG reasoning step needs an LLM. To use Groq, set your key as an
-environment variable:
-
-```powershell
-setx GROQ_API_KEY "gsk_your_key_here"
+```
+setx LLM_BASE_URL "https://api.groq.com/openai/v1"
+setx LLM_API_KEY  "gsk_..."
+setx KAG_MODEL    "llama-3.3-70b-versatile"
 ```
 
-> Open a **new** terminal after `setx` so the variable is picked up.
+Open a **new** terminal after `setx`. On Anthropic the answer is constrained by
+structured outputs. On OpenAI-compatible providers it uses JSON mode, is
+validated with Pydantic, and gets one corrective retry.
 
-Then point KAG's `chat_llm` at Groq's OpenAI-compatible endpoint. See the
-**"REFERENCE ONLY — Groq LLM configuration"** comment block inside
-[jaeger_kag_bridge.py](jaeger_kag_bridge.py) for the exact `kag_config.yaml`
-snippet.
+### From the terminal
 
-> Note: Groq serves chat models only — configure a separate embedding provider
-> for KAG's vector store.
+```bash
+cd kag
+python3 ask.py "is anything breaking?"       # pretty answer
+python3 ask.py --json                         # the raw HealthReport
+python3 ask.py --show-prompt                  # exactly what the LLM saw
 
-## Step 5 — Run the bridge
-
-```powershell
-python jaeger_kag_bridge.py
+../ops/demo.sh chaos latency 2500             # or: chaos errors 0.5 | chaos clear
+../ops/demo.sh kill inventory-svc             # or: restart <svc> | heal
+../ops/demo.sh load 30 4                      # 30s of traffic, 4 workers
 ```
 
-Expected output:
+## How the answer is produced
 
-1. A **Jaeger Error Trace Context** block — trace IDs, failing services, span
-   parent-child relationships, and error logs.
-2. A **KAG Root-Cause Analysis** section.
-   - If KAG + an LLM are configured, this is the model's analysis.
-   - If not, the script gracefully prints the *grounded prompt* that would be
-     sent to the LLM (so you can still demo the full data flow).
+`kag/assistant.py` runs four stages; the console shows each one as it happens.
 
-## Step 6 — Shut down
+1. **Observe.** Health-check every service (a crashed process emits no traces,
+   so this is the only way to see it). Read the last 5 minutes of traces from
+   Jaeger. Probe the connection pool and queue. Load the change log and the
+   health monitor's DOWN/UP history.
+2. **Seed.** Turn what hurts into symptoms: a service down, a request error rate
+   ≥ 5%, an edge p95 ≥ 1s, or queue lag.
+3. **Rank.** Walk the knowledge graph backwards from the symptoms. Score each
+   candidate cause by whether it explains *all* the symptoms and whether every
+   hop on the way is corroborated. Components that live probes show healthy are
+   ruled out.
+4. **Reason.** The LLM gets the measured service table, a timeline, and the
+   ranked subgraph, and fills the `Diagnosis` schema.
 
-```powershell
-docker compose down
+The per-service table in the answer is measured, never generated by the LLM.
+
+### The answer format (`kag/report.py`)
+
+```python
+class HealthReport(BaseModel):
+    question: str
+    checked_at: str
+    window: str
+    overall_status: Literal["HEALTHY", "DEGRADED", "DOWN"]
+    is_anything_breaking: bool
+    answer: str                       # 2-3 plain sentences
+    incident: Optional[Incident]      # null when healthy
+    confidence: Literal["high", "medium", "low"]
+    services: List[ServiceHealth]     # measured
+    reasoning: List[str]
+    generated_by: str                 # "anthropic:claude-opus-5-5" or "rules (...)"
+
+class Incident(BaseModel):
+    title: str
+    affected_services: List[str]
+    root_cause_component: str         # exact graph node id
+    root_cause: str
+    category: Literal["service_down", "high_latency", "error_spike",
+                      "bad_deployment", "resource_exhaustion", "bad_message", "unknown"]
+    started_at: Optional[str]
+    ended_at: Optional[str]
+    ongoing: bool
+    causal_chain: List[str]
+    evidence: List[str]
+    remediation: List[str]
 ```
 
-Add `-v` to also remove the persisted KAG volume:
+## Files
 
-```powershell
-docker compose down -v
-```
-
----
+| Path | What it is |
+|------|------------|
+| `services/` | The four Spring Boot services (Swagger via springdoc, actuator health with details). `inventory-svc` has hidden `/admin/chaos` fault injection. |
+| `ops/demo.sh` | Start/stop, traffic, faults (`chaos`, `kill`, `restart`, `heal`), plus the original scenarios. |
+| `kag/ui.py`, `kag/ui_index.html` | The demo console. |
+| `kag/assistant.py`, `kag/ask.py` | The question-answering pipeline and its CLI. |
+| `kag/report.py` | The Pydantic answer format. |
+| `kag/graph.py`, `kag/kag_engine.py`, `kag/facts.yaml` | The knowledge graph and the ranking. |
+| `kag/monitor.py` | Records exactly when services go DOWN / UP. |
+| `kag/llm.py` | Provider-agnostic LLM client (`complete()`, `structured()`). |
+| `kag/rca.py`, `kag/rag_baseline.py`, `/classic` | The original flat-RAG vs KAG comparison, still available. |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `Cannot connect to Jaeger` | Ensure `docker compose ps` shows `jaeger` healthy; check port 16686 |
-| `No error traces collected` | Generate traffic on the frontend first; widen `LOOKBACK` in the script |
-| `OpenSPG KAG SDK not available` | `pip install openspg-kag`, or run without it to see the grounded prompt |
-| KAG returns nothing | Verify `GROQ_API_KEY` is set and the `chat_llm` config is correct |
+| A card stays red after *Heal* | `./ops/demo.sh logs <svc>`; ports 8081-8084 must be free |
+| The answer says healthy right after a fault | Traffic must be flowing: click *Start steady traffic* and wait ~20s |
+| An old incident shows up in a new answer | The trace window is 5 minutes. Faults are separated by the monitor's last recovery, but waiting a few minutes between runs gives the cleanest story |
+| `generated_by: rules (LLM call failed)` | The LLM error is shown under the answer; check the key / model name |
+| No traces in Jaeger | `./ops/demo.sh status`; Jaeger must be up before the services start |
