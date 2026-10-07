@@ -22,6 +22,7 @@ Two deliberate design choices:
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
@@ -498,6 +499,17 @@ def api_chaos():
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"ok": True, "message": label})
+
+
+# --- the raw logs: the haystack, before the needle ---------------------------
+@app.get("/api/logs")
+def api_logs():
+    try:
+        minutes = max(1, min(30, int(float(request.args.get("minutes", "5")))))
+        proc = _demo_sh("logs-json", str(minutes), "400")
+        return jsonify(json.loads(proc.stdout))
+    except Exception as exc:                      # noqa: BLE001 - surfaced in the UI
+        return jsonify({"error": f"could not read the service logs: {exc}"}), 500
 
 
 # --- ask ---------------------------------------------------------------------

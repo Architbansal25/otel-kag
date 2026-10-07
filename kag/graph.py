@@ -315,6 +315,13 @@ def _error_origins(spans_by_id: Dict[str, Dict[str, Any]], svc_of) -> set:
 def _span_messages(span: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     for logrec in span.get("logs", []):
+        fields = {f.get("key"): f.get("value") for f in logrec.get("fields", [])}
+        if "log.severity" in fields:
+            # An application log line (from log-to-trace). INFO chatter is not
+            # evidence; WARN/ERROR lines are the service saying what went wrong.
+            if str(fields["log.severity"]) in ("WARN", "ERROR") and fields.get("log.message"):
+                out.append(str(fields["log.message"]))
+            continue
         for field in logrec.get("fields", []):
             if field.get("key") in ("event", "message", "error.message",
                                     "exception.message", "exception.type"):

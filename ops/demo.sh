@@ -27,6 +27,7 @@
 #   ./demo.sh reset              back to healthy
 #   ./demo.sh stop               stop everything
 #   ./demo.sh logs <svc>         tail a service log
+#   ./demo.sh logs-json [min]    all services' recent logs, merged (for the console)
 # =============================================================================
 set -uo pipefail
 
@@ -455,6 +456,57 @@ cmd_heal() {
   echo ""
 }
 
+cmd_logs_json() {
+  # All services' logs from the last N minutes, merged into one timeline, as
+  # JSON for the console's "raw logs" panel. Multi-line stack traces stay
+  # attached to the line that started them.
+  LOG_DIR="$LOG_DIR" MINUTES="${1:-5}" MAX="${2:-400}" python3 - <<'PY'
+import datetime, glob, json, os, re
+log_dir, minutes, max_rec = os.environ["LOG_DIR"], float(os.environ["MINUTES"]), int(os.environ["MAX"])
+stamp = re.compile(r"^(\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:\.\d+)?)")
+level_re = re.compile(r"\b(ERROR|WARN|INFO|DEBUG|TRACE)\b")
+cutoff = datetime.datetime.now() - datetime.timedelta(minutes=minutes)
+records, lines, per_svc = [], 0, {}
+for path in sorted(glob.glob(os.path.join(log_dir, "*.log"))):
+    svc = os.path.basename(path)[:-4]
+    if svc == "jaeger":
+        continue
+    with open(path, "rb") as fh:                       # only the tail: logs grow
+        fh.seek(max(0, os.path.getsize(path) - 8 * 1024 * 1024))
+        text = fh.read().decode("utf-8", "replace")
+    cur = None
+    for line in text.splitlines():
+        m = stamp.match(line)
+        if m:
+            try:
+                ts = datetime.datetime.fromisoformat(m.group(1).replace("T", " "))
+            except ValueError:
+                ts = None
+            cur = None
+            if ts and ts >= cutoff:
+                lv = level_re.search(line[:60])
+                cur = {"ts": ts, "svc": svc, "level": lv.group(1) if lv else "", "text": line, "n": 1}
+                records.append(cur)
+                per_svc[svc] = per_svc.get(svc, 0) + 1
+                lines += 1
+        elif cur is not None:                           # stack trace / continuation
+            cur["text"] += "\n" + line
+            cur["n"] += 1
+            per_svc[svc] = per_svc.get(svc, 0) + 1
+            lines += 1
+records.sort(key=lambda r: r["ts"])
+levels = {}
+for r in records:
+    levels[r["level"]] = levels.get(r["level"], 0) + 1
+print(json.dumps({
+    "minutes": minutes, "lines": lines, "entries": len(records), "per_service": per_svc,
+    "errors": levels.get("ERROR", 0), "warnings": levels.get("WARN", 0),
+    "records": [{"t": r["ts"].strftime("%H:%M:%S.%f")[:-3], "svc": r["svc"], "level": r["level"],
+                 "text": r["text"][:3000]} for r in records[-max_rec:]],
+}))
+PY
+}
+
 cmd_logs() {
   local svc=${1:-}
   [ -n "$svc" ] || { red "Usage: ./demo.sh logs <broker|inventory-svc|order-api|notification-svc|jaeger>"; return 1; }
@@ -475,7 +527,8 @@ case "${1:-}" in
   status)   cmd_status ;;
   stop)     cmd_stop ;;
   logs)     cmd_logs "${2:-}" ;;
+  logs-json) cmd_logs_json "${2:-5}" "${3:-400}" ;;
   *)
-    sed -n '3,34p' "$0" | sed 's/^# \?//'
+    sed -n '3,30p' "$0" | sed 's/^# \?//'
     ;;
 esac

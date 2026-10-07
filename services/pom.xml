@@ -26,6 +26,7 @@
     </properties>
 
     <modules>
+        <module>log-to-trace</module>
         <module>broker</module>
         <module>inventory-svc</module>
         <module>order-api</module>

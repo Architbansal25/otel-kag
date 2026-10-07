@@ -13,6 +13,11 @@
     <description>Stock reservation against H2. Owns the connection pool that scenario 2 starves.</description>
 
     <dependencies>
+        <dependency>
+            <groupId>com.nagarro.demo</groupId>
+            <artifactId>log-to-trace</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- Bridged by the OTel Java agent at runtime; used to echo the trace id. -->
         <dependency>
             <groupId>io.opentelemetry</groupId>

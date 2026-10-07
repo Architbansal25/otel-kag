@@ -22,13 +22,15 @@ health checks ───────────────────┘   (fa
 | 1 | **Show the app running.** Four green service cards and a live architecture diagram. | Console `http://localhost:8090` |
 | 2 | **Open Swagger** and fire a request or two (`POST /orders`, `GET /products/{sku}/availability`). | Each card's *Swagger* link, e.g. `http://localhost:8081/swagger-ui.html` |
 | 3 | **Show health:** click *Health* on a card (`/actuator/health`, with db / jms details). | `http://localhost:8081/actuator/health` |
-| 4 | **Show Jaeger:** click *Place order* in the console, then *open trace in Jaeger* to see one request cross three services. | `http://localhost:16686` |
+| 4 | **Show Jaeger:** click *Place order* in the console, then *open trace in Jaeger* to see one request cross three services. Click a span and open **Logs** to see the log lines that request wrote. | `http://localhost:16686` |
 | 5 | Click **Start steady traffic** so there is always something to observe. | Console, section 2 |
 | 6 | **Ask: "Is anything breaking?"** The answer: `HEALTHY`, nothing breaking, every service measured. | Console, section 3 |
-| 7 | **Break something** (open *Presenter controls* at the bottom). Either inject a delay into inventory-svc's data fetching, or stop a service. | Console, section 4 |
-| 8 | Wait ~20s, then **ask again.** The answer is `DEGRADED`/`DOWN`, with the root-cause service, the time it started, how it spread, evidence, and what to do. | Console, section 3 |
-| 9 | Expand **"Structured answer — the Pydantic HealthReport JSON"** to show it is a typed contract, not free text. | Console |
-| 10 | **Heal everything**, wait, ask *"Is it fixed?"* | Console |
+| 7 | **Break something** (open *Presenter controls* at the bottom). Either inject a delay or errors into inventory-svc's data fetching, or stop a service. | Console, section 4 |
+| 8 | **Show the haystack:** click **Show raw logs**. Tens of thousands of lines from four services, stack traces, broker audit noise. *"Would you find the cause in here?"* | Console, section 3 |
+| 9 | Wait ~20s, then **ask again.** The answer is `DEGRADED`/`DOWN`, with the root-cause service, the time it started, how it spread, evidence, and what to do. | Console, section 3 |
+| 10 | Expand **"Structured answer — the Pydantic HealthReport JSON"** to show it is a typed contract, not free text. | Console |
+| 11 | Optional: open the failing request in Jaeger from a `trace=` link in the raw logs; its span **Logs** show the same error the assistant quoted. | Jaeger |
+| 12 | **Heal everything**, wait, ask *"Is it fixed?"* | Console |
 
 What each fault looks like to the assistant:
 
@@ -42,6 +44,26 @@ What each fault looks like to the assistant:
 
 The delay and error injections are hidden from Swagger and leave no log line or
 change record. The only way to find the cause is to reason from the telemetry.
+
+## Logs: in Jaeger and in the console
+
+Every service writes its log lines in this format, with the request's trace id:
+
+```
+2026-10-07 19:49:35.221  INFO [order-api] [trace=4c812c2e…] [nio-8081-exec-4] c.n.d.order.OrderController : Order b88f… placed for sku SKU-1001
+```
+
+- **In Jaeger:** each log line written while handling a request is also attached
+  to that request's span (the shared `services/log-to-trace` module does this).
+  Open a trace, click a span, expand **Logs**. A failing span shows the ERROR line
+  and the exception with its stack trace.
+- **From a log line to its trace:** copy the `trace=` id into Jaeger's *Lookup by
+  Trace ID* box, or click it in the console's raw-logs panel. One order has the
+  same trace id in order-api and notification-svc, across the queue.
+- **All of it at once:** the console's **Show raw logs** merges the last 5 minutes
+  of all four services (`./ops/demo.sh logs-json` underneath), with counts of
+  lines, errors and warnings.
+- **One service, live:** `./ops/demo.sh logs inventory-svc`
 
 ## Running it
 

@@ -1,3 +1,4 @@
 # runtime state written while the demo runs
 kag/health_events.json
 __pycache__/
+services/log-to-trace/target/

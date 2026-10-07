@@ -101,6 +101,20 @@
   .spark i.f{background:var(--red)}
 
   /* ask */
+  .logs{margin-bottom:14px}
+  .logs .row{justify-content:space-between}
+  .logstats{font-size:14px;color:var(--dim)}
+  .logstats b{color:var(--text);font:700 18px var(--mono)}
+  .logbox{margin-top:10px;font:12px/1.45 var(--mono);background:#0b0d11;border:1px solid var(--line);
+          border-radius:8px;padding:8px 10px;max-height:360px;overflow:auto;white-space:pre-wrap;
+          word-break:break-all;color:#aab3c2}
+  .logbox:empty{display:none}
+  .lg{padding:1px 0;border-bottom:1px solid rgba(43,49,61,.35)}
+  .lg-ERROR{color:#ff8a80}
+  .lg-WARN{color:#ffd57a}
+  .lsvc{display:inline-block;min-width:118px;font-weight:700}
+  .s-order-api{color:var(--blue)} .s-inventory-svc{color:var(--violet)}
+  .s-notification-svc{color:var(--green)} .s-broker{color:var(--amber)}
   .qrow{display:flex;gap:9px;margin-bottom:10px}
   .qrow input{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;
               padding:14px 16px;color:var(--text);font:17px system-ui,sans-serif}
@@ -231,6 +245,13 @@
 <section>
   <div class="step"><span class="n">3</span><h2>Ask the system</h2>
     <p>The engine checks health, reads the traces, walks the knowledge graph, and answers in a fixed structured format.</p></div>
+  <div class="card logs">
+    <div class="row">
+      <div class="logstats" id="logStats">The old way: read the logs of every service and look for the problem yourself.</div>
+      <button id="logBtn" onclick="showLogs()">Show raw logs (last 5 min)</button>
+    </div>
+    <div class="logbox" id="logBox"></div>
+  </div>
   <div class="qrow">
     <input id="question" type="text" value="Is anything breaking, or is the application running fine?"
            onkeydown="if(event.key==='Enter')ask()">
@@ -311,6 +332,7 @@ async function overview() {
     g.setAttribute('class', 'node ' + (s ? s.state : ''));
   });
   $('jaegerBadge').href = d.jaeger.url;
+  JAEGER = d.jaeger.url;
   $('jaegerBadge').innerHTML = 'Jaeger <b>' + (d.jaeger.up ? 'up' : 'down') + '</b>';
   $('llmBadge').textContent = d.llm.provider === 'none' ? 'none (rule-based)'
       : d.llm.provider + ' · ' + d.llm.model + (d.llm.warning ? ' ⚠' : '');
@@ -329,6 +351,29 @@ async function overview() {
           `<div><span class="c-${e.to === 'UP' ? 'UP' : e.to}">${esc(e.at.slice(11))}</span> ${esc(e.service)} ${esc(e.from)} → ${esc(e.to)} ${e.detail ? '(' + esc(e.detail) + ')' : ''}</div>`).join('')
       : 'none yet';
   if (d.control && d.control.log) $('ctlLog').textContent = d.control.log;
+}
+
+let JAEGER = 'http://localhost:16686';
+const linkTraces = t => t.replace(/trace=([0-9a-f]{32})/g,
+  (m, id) => `trace=<a href="${JAEGER}/trace/${id}" target="_blank" title="open this request in Jaeger">${id.slice(0, 8)}…</a>`);
+
+async function showLogs() {
+  $('logBtn').disabled = true;
+  $('logStats').textContent = 'reading the logs of every service…';
+  let d;
+  try { d = await (await fetch('/api/logs?minutes=5')).json(); }
+  catch { d = {error: 'console not reachable'}; }
+  $('logBtn').disabled = false;
+  $('logBtn').textContent = 'Refresh raw logs';
+  if (d.error) { $('logStats').textContent = d.error; return; }
+  const services = Object.keys(d.per_service || {}).length;
+  $('logStats').innerHTML =
+    `<b>${d.lines.toLocaleString()}</b> log lines from ${services} services in the last ${d.minutes} minutes · ` +
+    `<span class="c-DOWN">${d.errors} errors</span> · <span class="c-DEGRADED">${d.warnings} warnings</span>` +
+    (d.records.length < d.entries ? ` · showing the latest ${d.records.length}` : '');
+  $('logBox').innerHTML = d.records.map(r =>
+    `<div class="lg lg-${r.level}"><span class="lsvc s-${r.svc}">${esc(r.svc)}</span>${linkTraces(esc(r.text))}</div>`).join('');
+  $('logBox').scrollTop = $('logBox').scrollHeight;
 }
 
 async function tryIt(action) {

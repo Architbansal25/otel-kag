@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared by every service (it ships inside log-to-trace.jar).
+
+  Console format: local time, level, service, trace id, logger, message. The
+  trace id is put into the MDC by the OTel Java agent, so any log line can be
+  pasted into Jaeger (http://localhost:16686/trace/<id>) to see the whole request.
+-->
+<configuration>
+    <springProperty scope="context" name="APP" source="spring.application.name" defaultValue="app"/>
+    <property name="CONSOLE_LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [${APP}] [trace=%X{trace_id:-none}] [%15.15t] %-40.40logger{39} : %m%n%wEx"/>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <appender name="SPAN_EVENTS" class="com.nagarro.demo.logging.SpanEventAppender"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="SPAN_EVENTS"/>
+    </root>
+</configuration>
