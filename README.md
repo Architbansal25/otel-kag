@@ -5,6 +5,10 @@ OpenTelemetry into Jaeger, and you can ask the system in plain English whether
 anything is breaking. The answer comes back in a fixed, structured format
 (a Pydantic `HealthReport`): what is down, why, and since when.
 
+**Presenting?** [HOW-IT-WORKS.md](HOW-IT-WORKS.md) is the dry run: what happens
+at each step, where every number on screen comes from, and answers to the
+questions the audience will ask.
+
 ```
 customer ─► order-api ─► inventory-svc ─► H2
                │              ▲
