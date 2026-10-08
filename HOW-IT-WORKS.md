@@ -246,6 +246,10 @@ comparison side by side.
 
 ## 7. Questions the audience will ask
 
+The quick ones are below. For a fuller set aimed at managers (cost, risk, data privacy,
+adoption) and DevOps engineers (sampling, ranking, Kubernetes, security), see
+[AUDIENCE-QA.md](AUDIENCE-QA.md).
+
 **"Did you have to change the application code to get this?"**
 Tracing: no. The OpenTelemetry Java agent is attached at startup. The only additions are a
 logging hook that copies log lines into the trace (`services/log-to-trace`), the `X-Trace-Id`

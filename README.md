@@ -7,7 +7,8 @@ anything is breaking. The answer comes back in a fixed, structured format
 
 **Presenting?** [HOW-IT-WORKS.md](HOW-IT-WORKS.md) is the dry run: what happens
 at each step, where every number on screen comes from, and answers to the
-questions the audience will ask.
+questions the audience will ask. [AUDIENCE-QA.md](AUDIENCE-QA.md) has answers
+for managers and DevOps engineers.
 
 ```
 customer ─► order-api ─► inventory-svc ─► H2
